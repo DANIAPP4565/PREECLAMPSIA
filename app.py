@@ -68,7 +68,7 @@ st.set_page_config(
 APP_TITLE = "Predicción, manejo clínico y terapéutico de preeclampsia por hemodinamia ICG"
 APP_SUBTITLE = "Importación PDF Z-Logic, fenotipo IC/IRV por edad gestacional, reglas convencionales + ML hemodinámico"
 AUTHOR = "Dr. Olano Ricardo Daniel - Cardiólogo Hipertensólogo"
-APP_VERSION_VISIBLE = "Versión corregida 2026-06-14 · PDF Z-Logic 4 hojas · ML interno sin puntos de corte manuales"
+APP_VERSION_VISIBLE = "Versión 2026-06-14 · Importa e integra 2 PDF Z-Logic (DE 4 HOJAS + COMPLETO) · ML interno sin puntos de corte manuales"
 
 
 DEFAULT_MODEL_CONFIG: Dict[str, Any] = {
@@ -410,6 +410,7 @@ class ExtractedValue:
     page: int
     position: str
     confidence: str = "media"
+    archivo: str = ""
 
 
 def pdf_to_pages(uploaded_file: Any) -> List[Dict[str, Any]]:
@@ -580,7 +581,7 @@ def parse_variables_from_text(text: str, page: int, position: str) -> List[Extra
     return values
 
 
-def parse_zlogic_pdf(uploaded_file: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
+def parse_zlogic_pdf(uploaded_file: Any, source_label: str = "") -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
     pages = pdf_to_pages(uploaded_file)
     full_text = "\n".join(p.get("text", "") for p in pages)
     demo = parse_demographics(full_text)
@@ -594,6 +595,9 @@ def parse_zlogic_pdf(uploaded_file: Any) -> Tuple[List[Dict[str, Any]], Dict[str
     for k in ["PAS", "PAD"]:
         if k in demo and clean_num(demo[k]) is not None:
             extracted.append(ExtractedValue(k, float(clean_num(demo[k])), "Datos demográficos/cabecera", 0, "Cabecera", confidence="media"))
+
+    for ev in extracted:
+        ev.archivo = source_label
 
     rows = [ev.__dict__ for ev in extracted]
     return rows, demo, full_text
@@ -613,6 +617,30 @@ def collapse_by_position(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
         if var and val is not None:
             grouped[pos][var] = val
     return grouped
+
+
+def merge_demographics(demo_a: Dict[str, Any], demo_b: Dict[str, Any]) -> Dict[str, Any]:
+    # Combina los datos de cabecera de los dos PDF, completando los faltantes.
+    out: Dict[str, Any] = {}
+    for key in set(demo_a) | set(demo_b):
+        out[key] = first_non_empty(demo_a.get(key), demo_b.get(key))
+    return {k: v for k, v in out.items() if v is not None and str(v).strip() != ""}
+
+
+def integrate_two_pdf_extractions(
+    rows_a: List[Dict[str, Any]],
+    demo_a: Dict[str, Any],
+    rows_b: List[Dict[str, Any]],
+    demo_b: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    # Integra los dos informes Z-Logic (DE 4 HOJAS + COMPLETO).
+    # Une las variables por posicion para que ambos informes se complementen y no
+    # falte ninguna. Ante un mismo dato presente en los dos PDF se conserva el del
+    # informe COMPLETO (cargado en segundo lugar dentro de la lista combinada).
+    combined_rows = list(rows_a) + list(rows_b)
+    merged_demo = merge_demographics(demo_a, demo_b)
+    grouped = collapse_by_position(combined_rows)
+    return combined_rows, merged_demo, grouped
 
 
 def variables_to_editor_df(var_dict: Dict[str, Any]) -> pd.DataFrame:
@@ -1623,56 +1651,93 @@ def build_markdown_report(results: Dict[str, Any]) -> str:
 # FLUJOS PRINCIPALES
 # =========================================================
 
-def single_pdf_flow(cfg: Dict[str, Any], logo_bytes: Optional[bytes], firma_bytes: Optional[bytes], medico: str, institucion: str) -> None:
-    st.markdown("## 1) Importar informe completo Z-Logic de 4 hojas")
+def dual_pdf_flow(cfg: Dict[str, Any], logo_bytes: Optional[bytes], firma_bytes: Optional[bytes], medico: str, institucion: str) -> None:
+    st.markdown("## 1) Importar e integrar los DOS informes Z-Logic")
     st.info(
-        "Cargue el PDF digital del informe completo Z-Logic/ICG de 4 hojas. "
-        "Luego presione el botón de importación para integrar automáticamente datos demográficos, "
-        "variables hemodinámicas, diagnóstico convencional, ML y PDF médico."
-    )
-    upload = st.file_uploader(
-        "Botón de carga: PDF Z-Logic/ICG - informe completo de 4 hojas",
-        type=["pdf"],
-        accept_multiple_files=False,
-        key="zlogic_pdf_upload",
+        "Cargue OBLIGATORIAMENTE los dos PDF digitales del mismo estudio Z-Logic/ICG. "
+        "Ambos se integran y se complementan para que no falte ninguna variable: "
+        "el informe **DE 4 HOJAS** y el informe **COMPLETO**."
     )
 
-    current_token = None
-    if upload is not None:
-        current_token = f"{getattr(upload, 'name', 'pdf')}_{getattr(upload, 'size', 0)}"
+    col_up1, col_up2 = st.columns(2)
+    with col_up1:
+        upload_4h = st.file_uploader(
+            "PDF Z-Logic/ICG - DE 4 HOJAS",
+            type=["pdf"],
+            accept_multiple_files=False,
+            key="zlogic_pdf_upload_4h",
+        )
+    with col_up2:
+        upload_full = st.file_uploader(
+            "PDF Z-Logic/ICG - COMPLETO",
+            type=["pdf"],
+            accept_multiple_files=False,
+            key="zlogic_pdf_upload_full",
+        )
+
+    def _file_token(u: Any) -> str:
+        if u is None:
+            return "none"
+        return f"{getattr(u, 'name', 'pdf')}_{getattr(u, 'size', 0)}"
+
+    current_token = f"{_file_token(upload_4h)}|{_file_token(upload_full)}"
+    if upload_4h is not None or upload_full is not None:
         if st.session_state.get("zlogic_pdf_token") != current_token:
             for k in ["zlogic_pdf_rows", "zlogic_pdf_demo", "zlogic_pdf_text", "zlogic_pdf_grouped"]:
                 st.session_state.pop(k, None)
             st.session_state["zlogic_pdf_token"] = current_token
 
+    both_loaded = upload_4h is not None and upload_full is not None
+    if not both_loaded and (upload_4h is not None or upload_full is not None):
+        st.warning("Se requieren los DOS PDF (DE 4 HOJAS + COMPLETO) para integrar el estudio. Cargue el que falte.")
+
     import_clicked = st.button(
-        "Importar informe completo Z-Logic de 4 hojas e integrar",
+        "IMPORTAR E INTEGRAR LOS DOS PDF: DE 4 HOJAS + COMPLETO",
         type="primary",
-        disabled=upload is None,
-        key="btn_import_zlogic_pdf",
+        disabled=not both_loaded,
+        key="btn_import_zlogic_dual",
     )
 
-    if import_clicked and upload is not None:
-        with st.spinner("Leyendo las 4 hojas del PDF Z-Logic e importando variables hemodinámicas..."):
-            try:
-                upload.seek(0)
-            except Exception:
-                pass
-            extracted_rows, demo, full_text = parse_zlogic_pdf(upload)
-            grouped = collapse_by_position(extracted_rows)
+    if import_clicked and both_loaded:
+        with st.spinner("Leyendo e integrando los dos PDF Z-Logic (DE 4 HOJAS + COMPLETO)..."):
+            for u in (upload_4h, upload_full):
+                try:
+                    u.seek(0)
+                except Exception:
+                    pass
+            rows_4h, demo_4h, text_4h = parse_zlogic_pdf(upload_4h, source_label="DE 4 HOJAS")
+            rows_full, demo_full, text_full = parse_zlogic_pdf(upload_full, source_label="COMPLETO")
+            extracted_rows, demo, grouped = integrate_two_pdf_extractions(
+                rows_4h, demo_4h, rows_full, demo_full
+            )
+            full_text = (
+                "===== INFORME DE 4 HOJAS =====\n" + (text_4h or "")
+                + "\n\n===== INFORME COMPLETO =====\n" + (text_full or "")
+            )
             st.session_state["zlogic_pdf_rows"] = extracted_rows
             st.session_state["zlogic_pdf_demo"] = demo
             st.session_state["zlogic_pdf_text"] = full_text
             st.session_state["zlogic_pdf_grouped"] = grouped
 
-        if not full_text.strip():
+        text_4h_ok = bool((text_4h or "").strip())
+        text_full_ok = bool((text_full or "").strip())
+        if not text_4h_ok or not text_full_ok:
+            faltan = []
+            if not text_4h_ok:
+                faltan.append("DE 4 HOJAS")
+            if not text_full_ok:
+                faltan.append("COMPLETO")
             st.error(
-                "No se detectó texto seleccionable en el PDF. Probablemente sea un PDF escaneado. "
-                "Cargar versión digital del Z-Logic o aplicar OCR externo antes de importarlo."
+                "No se detectó texto seleccionable en: " + ", ".join(faltan) + ". "
+                "Probablemente sea un PDF escaneado. Cargar versión digital del Z-Logic "
+                "o aplicar OCR externo antes de importarlo."
             )
         else:
+            n_4h = sum(1 for r in extracted_rows if r.get("archivo") == "DE 4 HOJAS")
+            n_full = sum(1 for r in extracted_rows if r.get("archivo") == "COMPLETO")
             st.success(
-                f"Informe integrado. Variables detectadas: {len(extracted_rows)}. "
+                f"Dos informes integrados y complementados. "
+                f"Variables DE 4 HOJAS: {n_4h} · COMPLETO: {n_full} · Total: {len(extracted_rows)}. "
                 f"Posiciones/páginas detectadas: {', '.join(grouped.keys()) if grouped else 'sin variables'}."
             )
 
@@ -1681,12 +1746,12 @@ def single_pdf_flow(cfg: Dict[str, Any], logo_bytes: Optional[bytes], firma_byte
     full_text: str = st.session_state.get("zlogic_pdf_text", "")
     grouped: Dict[str, Dict[str, Any]] = st.session_state.get("zlogic_pdf_grouped", {})
 
-    if upload is not None and not grouped and not full_text and not import_clicked:
-        st.warning("PDF cargado. Presione **Importar informe completo Z-Logic de 4 hojas e integrar** para extraer las variables.")
+    if both_loaded and not grouped and not full_text and not import_clicked:
+        st.warning("PDF cargados. Presione **IMPORTAR E INTEGRAR LOS DOS PDF: DE 4 HOJAS + COMPLETO** para extraer las variables.")
 
     if full_text or extracted_rows:
-        with st.expander("Auditoría de importación del PDF", expanded=False):
-            st.text_area("Texto extraído del PDF", value=full_text[:12000], height=220, key="pdf_text_audit")
+        with st.expander("Auditoría de importación e integración de los dos PDF", expanded=False):
+            st.text_area("Texto extraído (DE 4 HOJAS + COMPLETO)", value=full_text[:16000], height=240, key="pdf_text_audit")
             if extracted_rows:
                 st.dataframe(pd.DataFrame(extracted_rows), use_container_width=True, hide_index=True)
 
@@ -1892,7 +1957,7 @@ def main() -> None:
 
     tabs = st.tabs(["PDF Z-Logic", "Carga manual", "Lote Excel/CSV", "Base de conocimiento"])
     with tabs[0]:
-        single_pdf_flow(cfg, logo_bytes, firma_bytes, medico, institucion)
+        dual_pdf_flow(cfg, logo_bytes, firma_bytes, medico, institucion)
     with tabs[1]:
         manual_flow(cfg, logo_bytes, firma_bytes, medico, institucion)
     with tabs[2]:

@@ -8,8 +8,8 @@ Autor / Desarrollador: Dr. Olano Ricardo Daniel, Cardiólogo Hipertensólogo.
 Notas de seguridad clínica:
 - Esta herramienta es de apoyo a la decisión clínica. No reemplaza el juicio médico,
   la evaluación obstétrica ni las guías locales vigentes.
-- El módulo de Machine Learning incluye un score operativo global y el subdiagnóstico
-  J48 Olano 2025 para PE temprana/tardía con STR/CTS, IA/IAC, ELV/EES y ACI/CA.
+- El módulo de Machine Learning basado en CA/ICA, IC, ITC/ITS, CTE e IH
+  estima riesgo general de preeclampsia. No clasifica preeclampsia temprana ni tardía.
   Para investigación regulatoria/publicación debe validarse contra la base local y
   documentar calibración, ROC, DCA y trazabilidad de falsos positivos/negativos.
 """
@@ -68,16 +68,16 @@ st.set_page_config(
 APP_TITLE = "Predicción, manejo clínico y terapéutico de preeclampsia por hemodinamia ICG"
 APP_SUBTITLE = "Importación PDF Z-Logic, fenotipo IC/IRV por edad gestacional, reglas convencionales + ML hemodinámico"
 AUTHOR = "Dr. Olano Ricardo Daniel - Cardiólogo Hipertensólogo"
-APP_VERSION_VISIBLE = "Versión 2026-06-15 · OBLIGATORIO DOS PDF: INFORME COMPLETO + INFORME DE 4 HOJAS · ORTOSTATISMO ACOSTADO→PARADO"
+APP_VERSION_VISIBLE = "Versión 2026-06-15c · DOS PDF OBLIGATORIOS · EJES CLÍNICOS IC/IRV EXPLICADOS · ML PE GENERAL"
 
 
 DEFAULT_MODEL_CONFIG: Dict[str, Any] = {
-    "version": "ZLogic-ICG-PE-v1.2-J48-Olano-2025",
+    "version": "ZLogic-ICG-PE-v1.3-Olano-2023-Riesgo-General",
     "notas": (
-        "Reglas hemodinámicas incorporadas basadas en variables publicadas: "
-        "IC/CI, IRV/VRI, CA/ICA, ITS/ITC/CWI, CTE/ETR e IH/HI, "
-        "más el subclasificador J48 Olano 2025 para PE temprana/tardía "
-        "con STR/CTS, IA/IAC, ELV/EES y ACI/CA."
+        "Modelo ML operativo de riesgo general de preeclampsia basado en las variables "
+        "publicadas por Olano et al. 2023: CA/ICA, IC, ITC/ITS, CTE e IH. "
+        "Este modelo NO diferencia PE temprana vs PE tardía; esa diferenciación no debe "
+        "mostrarse como diagnóstico ML con estas variables."
     ),
     "z_ic_bajo": -1.0,
     "z_ic_alto": 1.0,
@@ -91,33 +91,16 @@ DEFAULT_MODEL_CONFIG: Dict[str, Any] = {
     "ac_desacoplado": 1.30,
     "prob_bajo": 0.25,
     "prob_alto": 0.60,
-    "j48_olano_2025": {
-        "descripcion": "J48 publicado por Olano et al. 2025 para discriminar PE temprana y tardía con hemodinamia no invasiva. Se aplica como subclasificador cuando el bloque ML global sugiere riesgo o activación clínica/hemodinámica.",
-        "str_alto_tardia": 43.37,
-        "ia_baja_tardia": 190.87,
-        "elv_alta_temprana": 1.53,
-        "str_intermedia_temprana": 41.21,
-        "aci_baja_tardia": 1.30,
-        "aci_intermedia_temprana": 1.51,
-    },
-    "pesos_temprana": {
-        "ic_bajo": 1.6,
-        "irv_alto": 1.8,
-        "ca_baja": 1.1,
-        "ih_bajo": 1.0,
-        "cte_alto": 0.8,
-        "itc_bajo": 0.8,
-        "ac_desacoplado": 0.8,
-        "hta": 0.9,
-        "proteinuria_o_disfuncion": 1.0,
-    },
-    "pesos_tardia": {
-        "ic_alto": 1.3,
-        "irv_bajo_o_normal": 0.9,
-        "hiperdinamia": 1.1,
-        "imc_30": 1.0,
-        "hta": 1.0,
-        "ac_desacoplado": 0.5,
+    "pesos_pe_general": {
+        "ca_baja": 1.25,
+        "ic_anormal": 1.10,
+        "itc_bajo": 0.95,
+        "cte_alto": 0.90,
+        "ih_bajo": 1.00,
+        "hta": 0.70,
+        "proteinuria_o_disfuncion": 1.00,
+        "perfil_hemodinamico_alterado": 0.65,
+        "ac_desacoplado": 0.40,
     },
 }
 
@@ -847,194 +830,43 @@ def logistic(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
-def ratio_to_percent_for_j48(value: Any) -> Optional[float]:
-    """Devuelve STR/CTS en porcentaje para aplicar el árbol J48 Olano 2025.
-
-    En Z-Logic algunos informes expresan CTS/STR como 37,8 %, mientras que
-    otros módulos internos lo guardan como relación 0,378. El árbol publicado
-    usa puntos de corte en escala porcentual: 43,37 y 41,21.
-    """
-    v = clean_num(value)
-    if v is None:
-        return None
-    return v * 100.0 if v <= 2 else v
-
-
-def j48_olano_2025_diagnosis(vars: Dict[str, float], category: str, clinical: Dict[str, Any], hemo: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Subclasificador J48 publicado por Olano et al. 2025.
-
-    El artículo muestra un árbol que discrimina PE temprana vs PE tardía usando
-    STR/CTS, IA/IAC, ELV/EES y ACI/CA. La figura también muestra una rama No PE,
-    pero el umbral del nodo inicial no queda disponible en el texto extraído; por
-    seguridad clínica esta app conserva el score global operativo para activar el
-    diagnóstico de riesgo y usa el J48 2025 como subdiagnóstico de subtipo.
-    """
-    jcfg = cfg.get("j48_olano_2025", {}) or {}
-    str_cut_high = float(jcfg.get("str_alto_tardia", 43.37))
-    ia_cut = float(jcfg.get("ia_baja_tardia", 190.87))
-    elv_cut = float(jcfg.get("elv_alta_temprana", 1.53))
-    str_cut_mid = float(jcfg.get("str_intermedia_temprana", 41.21))
-    aci_cut_low = float(jcfg.get("aci_baja_tardia", 1.30))
-    aci_cut_high = float(jcfg.get("aci_intermedia_temprana", 1.51))
-
-    str_percent = ratio_to_percent_for_j48(vars.get("CTS"))
-    ia = clean_num(vars.get("IAC"))
-    elv = clean_num(vars.get("EES"))
-    aci = clean_num(vars.get("CA"))
-
-    gate_active = (
-        (category or "").upper() in {"ALTO", "INTERMEDIO"}
-        or bool(clinical.get("hta"))
-        or bool(clinical.get("organ"))
-        or "alto" in str(hemo.get("severity", "")).lower()
-        or "intermedio" in str(hemo.get("severity", "")).lower()
-    )
-
-    if not gate_active:
-        return {
-            "available": True,
-            "activated": False,
-            "classification": "No PE / bajo riesgo por ML operativo",
-            "category": "BAJO",
-            "subtype": "No activado",
-            "route": "El subárbol J48 2025 no se activa porque no hay riesgo global, clínico ni hemodinámico significativo.",
-            "variables": {"STR_percent": str_percent, "IA": ia, "ELV": elv, "ACI": aci},
-        }
-
-    if str_percent is None:
-        return {
-            "available": False,
-            "activated": True,
-            "classification": "No clasificable por J48 2025",
-            "category": "INDETERMINADO",
-            "subtype": "Falta STR/CTS",
-            "route": "Falta STR/CTS, variable raíz del subclasificador J48 publicado.",
-            "variables": {"STR_percent": str_percent, "IA": ia, "ELV": elv, "ACI": aci},
-        }
-
-    path: List[str] = [f"STR/CTS={str_percent:.2f}%"]
-    if str_percent > str_cut_high:
-        path.append(f"> {str_cut_high:.2f}%")
-        cls = "PE tardía por J48 2025"
-        subtype = "Predominio PE tardía / materno-metabólica"
-    else:
-        path.append(f"<= {str_cut_high:.2f}%")
-        if ia is None:
-            return {
-                "available": False,
-                "activated": True,
-                "classification": "No clasificable por J48 2025",
-                "category": "INDETERMINADO",
-                "subtype": "Falta IA/IAC",
-                "route": "Falta IA/IAC para continuar la rama STR/CTS <= 43,37%.",
-                "variables": {"STR_percent": str_percent, "IA": ia, "ELV": elv, "ACI": aci},
-            }
-        path.append(f"IA/IAC={ia:.2f}")
-        if ia <= ia_cut:
-            path.append(f"<= {ia_cut:.2f}")
-            cls = "PE tardía por J48 2025"
-            subtype = "Predominio PE tardía / materno-metabólica"
-        else:
-            path.append(f"> {ia_cut:.2f}")
-            if elv is None:
-                return {
-                    "available": False,
-                    "activated": True,
-                    "classification": "No clasificable por J48 2025",
-                    "category": "INDETERMINADO",
-                    "subtype": "Falta ELV/EES",
-                    "route": "Falta ELV/EES para continuar la rama IA/IAC > 190,87.",
-                    "variables": {"STR_percent": str_percent, "IA": ia, "ELV": elv, "ACI": aci},
-                }
-            path.append(f"ELV/EES={elv:.2f}")
-            if elv > elv_cut:
-                path.append(f"> {elv_cut:.2f}")
-                cls = "PE temprana por J48 2025"
-                subtype = "Predominio PE temprana / placentaria"
-            else:
-                path.append(f"<= {elv_cut:.2f}")
-                if str_percent > str_cut_mid:
-                    path.append(f"STR/CTS > {str_cut_mid:.2f}%")
-                    cls = "PE temprana por J48 2025"
-                    subtype = "Predominio PE temprana / placentaria"
-                else:
-                    path.append(f"STR/CTS <= {str_cut_mid:.2f}%")
-                    if aci is None:
-                        return {
-                            "available": False,
-                            "activated": True,
-                            "classification": "No clasificable por J48 2025",
-                            "category": "INDETERMINADO",
-                            "subtype": "Falta ACI/CA",
-                            "route": "Falta ACI/CA para continuar la rama STR/CTS <= 41,21%.",
-                            "variables": {"STR_percent": str_percent, "IA": ia, "ELV": elv, "ACI": aci},
-                        }
-                    path.append(f"ACI/CA={aci:.2f}")
-                    if aci <= aci_cut_low:
-                        path.append(f"<= {aci_cut_low:.2f}")
-                        cls = "PE tardía por J48 2025"
-                        subtype = "Predominio PE tardía / materno-metabólica"
-                    elif aci <= aci_cut_high:
-                        path.append(f"> {aci_cut_low:.2f} y <= {aci_cut_high:.2f}")
-                        cls = "PE temprana por J48 2025"
-                        subtype = "Predominio PE temprana / placentaria"
-                    else:
-                        path.append(f"> {aci_cut_high:.2f}")
-                        cls = "PE tardía por J48 2025"
-                        subtype = "Predominio PE tardía / materno-metabólica"
-
-    return {
-        "available": True,
-        "activated": True,
-        "classification": cls,
-        "category": "ALTO" if "PE" in cls else "BAJO",
-        "subtype": subtype,
-        "route": " → ".join(path),
-        "variables": {"STR_percent": str_percent, "IA": ia, "ELV": elv, "ACI": aci},
-    }
-
-
 def ml_hemodynamic_risk(vars: Dict[str, float], eg: Optional[float], clinical: Dict[str, Any], hemo: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Riesgo general de preeclampsia por ML hemodinámico Olano 2023.
+
+    Importante: el modelo publicado con CA/ICA, IC, ITC/ITS, CTE e IH predice
+    desarrollo de preeclampsia como evento global. No diferencia PE temprana ni
+    PE tardía. La app informa esa limitación explícitamente en pantalla, PDF,
+    Markdown y Excel.
+    """
     zic = hemo.get("z_ic")
-    zirv = hemo.get("z_irv")
     ca = clean_num(vars.get("CA"))
     ih = clean_num(vars.get("IH"))
     cte = clean_num(vars.get("CTE"))
     cts = clean_num(vars.get("CTS"))
     itc = clean_num(vars.get("ITC"))
     ac = clean_num(vars.get("AC"))
-    imc = clean_num(vars.get("IMC"))
+
+    ic_anormal = zic is not None and (zic <= cfg.get("z_ic_bajo", -1.0) or zic >= cfg.get("z_ic_alto", 1.0))
+    perfil_alterado = hemo.get("profile") not in {"NORMODINAMIA", "No clasificable", "Datos insuficientes"}
 
     flags = {
-        "ic_bajo": zic is not None and zic <= cfg.get("z_ic_bajo", -1.0),
-        "ic_alto": zic is not None and zic >= cfg.get("z_ic_alto", 1.0),
-        "irv_alto": zirv is not None and zirv >= cfg.get("z_irv_alto", 1.0),
-        "irv_bajo_o_normal": zirv is not None and zirv < cfg.get("z_irv_alto", 1.0),
         "ca_baja": ca is not None and ca < cfg.get("ca_baja", 1.0),
-        "ih_bajo": ih is not None and ih < cfg.get("ih_bajo", 10.0),
-        "cte_alto": (cte is not None and cte > cfg.get("cte_alto", 0.42)) or (cts is not None and cts > cfg.get("cts_alto", 0.40)),
+        "ic_anormal": ic_anormal,
         "itc_bajo": itc is not None and itc < cfg.get("itc_bajo", 3.0),
-        "ac_desacoplado": ac is not None and ac > cfg.get("ac_desacoplado", 1.30),
+        "cte_alto": (cte is not None and cte > cfg.get("cte_alto", 0.42)) or (cts is not None and cts > cfg.get("cts_alto", 0.40)),
+        "ih_bajo": ih is not None and ih < cfg.get("ih_bajo", 10.0),
         "hta": bool(clinical.get("hta")),
         "proteinuria_o_disfuncion": bool(clinical.get("organ")),
-        "hiperdinamia": hemo.get("profile") in {"HIPERDINAMIA", "IC ELEVADO CON IRV NORMAL"},
-        "imc_30": imc is not None and imc >= 30,
+        "perfil_hemodinamico_alterado": bool(perfil_alterado),
+        "ac_desacoplado": ac is not None and ac > cfg.get("ac_desacoplado", 1.30),
     }
 
-    score_early = -2.2
-    for flag, weight in cfg.get("pesos_temprana", {}).items():
+    score = -2.35
+    for flag, weight in cfg.get("pesos_pe_general", {}).items():
         if flags.get(flag):
-            score_early += float(weight)
+            score += float(weight)
 
-    score_late = -2.3
-    for flag, weight in cfg.get("pesos_tardia", {}).items():
-        if flags.get(flag):
-            score_late += float(weight)
-
-    p_early = logistic(score_early)
-    p_late = logistic(score_late)
-    p_global = max(p_early, p_late, 1 - (1 - p_early) * (1 - p_late))
-
+    p_global = logistic(score)
     if p_global >= cfg.get("prob_alto", 0.60):
         category = "ALTO"
     elif p_global >= cfg.get("prob_bajo", 0.25):
@@ -1042,27 +874,20 @@ def ml_hemodynamic_risk(vars: Dict[str, float], eg: Optional[float], clinical: D
     else:
         category = "BAJO"
 
-    if p_early >= p_late + 0.10:
-        subtype = "Predominio PE temprana / placentaria"
-    elif p_late >= p_early + 0.10:
-        subtype = "Predominio PE tardía / materno-metabólica"
-    else:
-        subtype = "Patrón mixto o no definido"
-
     drivers = [k for k, v in flags.items() if v]
-    j48 = j48_olano_2025_diagnosis(vars, category, clinical, hemo, cfg)
-    diagnosis_ml = f"Riesgo {category}; {subtype}; J48 2025: {j48.get('classification')}"
+    scope = "Riesgo general de preeclampsia; no clasifica PE temprana ni PE tardía."
+    diagnosis_ml = f"Riesgo general de PE {category}. {scope}"
     return {
         "category": category,
-        "subtype": subtype,
+        "subtype": scope,
+        "scope": scope,
         "p_global": p_global,
-        "p_early": p_early,
-        "p_late": p_late,
         "drivers": drivers,
         "flags": flags,
-        "j48_2025": j48,
         "diagnosis_ml": diagnosis_ml,
         "note": cfg.get("notas", ""),
+        "model_name": "Olano 2023 - árbol J48 de riesgo general de PE",
+        "variables_modelo": "CA/ICA, IC, ITC/ITS, CTE e IH",
     }
 
 
@@ -1178,6 +1003,94 @@ def plot_quadrant(hemo: Dict[str, Any]) -> Tuple[plt.Figure, bytes]:
     return fig, fig_to_png_bytes(fig)
 
 
+def plot_quadrant_clinical(vars: Dict[str, float], eg: Optional[float], hemo: Dict[str, Any]) -> Tuple[plt.Figure, bytes]:
+    """Cuadrante clínico con ejes reales, no z-score.
+
+    Eje X = IC medido (L/min/m²). Eje Y = IRV medido (dyn·s·cm⁻5·m²).
+    Las líneas punteadas marcan el rango esperado para la edad gestacional:
+    media ± 1 DE. La clasificación interna sigue usando z-score, pero el
+    gráfico se muestra en unidades clínicas para que sea interpretable.
+    """
+    egv = clean_num(eg)
+    ref = reference_at_week(egv)
+    ic = clean_num(vars.get("IC"))
+    irv = clean_num(vars.get("IRV"))
+    ic_low = ref["ic_media"] - ref["ic_sd"]
+    ic_high = ref["ic_media"] + ref["ic_sd"]
+    irv_low = ref["irv_media"] - ref["irv_sd"]
+    irv_high = ref["irv_media"] + ref["irv_sd"]
+
+    x_vals = [ic_low, ic_high]
+    y_vals = [irv_low, irv_high]
+    if ic is not None:
+        x_vals.append(ic)
+    if irv is not None:
+        y_vals.append(irv)
+    x_min = max(0.5, min(x_vals) - 0.8)
+    x_max = max(x_vals) + 0.8
+    y_min = max(400, min(y_vals) - 450)
+    y_max = max(y_vals) + 450
+
+    fig, ax = plt.subplots(figsize=(7.0, 5.6))
+    ax.axvspan(ic_low, ic_high, alpha=0.12, label="IC esperado para EG")
+    ax.axhspan(irv_low, irv_high, alpha=0.12, label="IRV esperado para EG")
+    ax.axvline(ic_low, linestyle="--", linewidth=1.0)
+    ax.axvline(ic_high, linestyle="--", linewidth=1.0)
+    ax.axhline(irv_low, linestyle="--", linewidth=1.0)
+    ax.axhline(irv_high, linestyle="--", linewidth=1.0)
+
+    # Punto de referencia central esperado.
+    ax.scatter([ref["ic_media"]], [ref["irv_media"]], s=45, marker="x", label="Media esperada EG", zorder=4)
+
+    if ic is not None and irv is not None:
+        ax.scatter([ic], [irv], s=130, zorder=5, label="Paciente")
+        ax.annotate(f"Paciente\nIC {fmt_num(ic,2)} / IRV {fmt_num(irv,0)}", (ic, irv), xytext=(10, 10), textcoords="offset points")
+    else:
+        ax.text(0.5, 0.5, "Faltan IC o IRV para ubicar el punto", transform=ax.transAxes, ha="center", va="center")
+
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_xlabel("Índice cardíaco medido, IC (L/min/m²)")
+    ax.set_ylabel("Índice de resistencia vascular medido, IRV (dyn·s·cm⁻5·m²)")
+    ax.set_title("Cuadrante hemodinámico IC/IRV con ejes clínicos")
+
+    ax.text(x_min + 0.04*(x_max-x_min), y_max - 0.05*(y_max-y_min), "Bajo flujo / alta resistencia\nhipodinamia", fontsize=8, va="top")
+    ax.text(x_max - 0.38*(x_max-x_min), y_min + 0.08*(y_max-y_min), "Alto flujo / baja resistencia\nhiperdinamia", fontsize=8, va="bottom")
+    ax.text(ic_low, y_min + 0.01*(y_max-y_min), f"IC bajo\n<{fmt_num(ic_low,2)}", fontsize=7, ha="right", va="bottom")
+    ax.text(ic_high, y_min + 0.01*(y_max-y_min), f"IC alto\n>{fmt_num(ic_high,2)}", fontsize=7, ha="left", va="bottom")
+    ax.text(x_min + 0.01*(x_max-x_min), irv_low, f"IRV bajo <{fmt_num(irv_low,0)}", fontsize=7, va="top")
+    ax.text(x_min + 0.01*(x_max-x_min), irv_high, f"IRV alto >{fmt_num(irv_high,0)}", fontsize=7, va="bottom")
+
+    footer = (
+        f"EG usada: {fmt_num(ref['semana'],1)} sem. Rango esperado = media ±1DE: "
+        f"IC {fmt_num(ic_low,2)}-{fmt_num(ic_high,2)}; IRV {fmt_num(irv_low,0)}-{fmt_num(irv_high,0)}. "
+        f"La app calcula internamente z = (valor - media EG) / DE EG."
+    )
+    ax.text(0.5, -0.20, footer, transform=ax.transAxes, ha="center", va="top", fontsize=7.5, wrap=True)
+    ax.grid(True, alpha=0.22)
+    ax.legend(fontsize=8, loc="best")
+    fig.tight_layout()
+    return fig, fig_to_png_bytes(fig)
+
+
+def render_quadrant_explanation(hemo: Dict[str, Any]) -> None:
+    ref = hemo.get("ref", {}) or {}
+    zic = hemo.get("z_ic")
+    zirv = hemo.get("z_irv")
+    st.caption(
+        "El cuadrante ahora muestra unidades reales: eje X = IC en L/min/m² y eje Y = IRV en dyn·s·cm⁻5·m². "
+        "Las bandas punteadas son el rango esperado para la edad gestacional. "
+        "Para clasificar bajo/normal/alto, la app calcula z-score interno: z = (valor medido − media esperada para EG) / DE esperada."
+    )
+    if ref:
+        st.caption(
+            f"Referencia usada: EG {fmt_num(ref.get('semana'),1)} sem; "
+            f"IC media {fmt_num(ref.get('ic_media'),2)} ± {fmt_num(ref.get('ic_sd'),2)}; "
+            f"IRV media {fmt_num(ref.get('irv_media'),0)} ± {fmt_num(ref.get('irv_sd'),0)}. "
+            f"zIC={fmt_num(zic,2)}; zIRV={fmt_num(zirv,2)}."
+        )
+
+
 # =========================================================
 # REPORTE PDF / EXPORTACIONES
 # =========================================================
@@ -1270,10 +1183,11 @@ def make_pdf_report(
         ["Diagnóstico clínico convencional", clinical.get("diagnosis", "No disponible")],
         ["Fenotipo hemodinámico IC/IRV", hemo.get("profile", "No disponible")],
         ["Interpretación", hemo.get("phenotype", "No disponible")],
-        ["Modelo ML hemodinámico", f"Riesgo {ml.get('category')} - {ml.get('subtype')}"],
-        ["Diagnóstico ML J48 Olano 2025", f"{ml.get('j48_2025', {}).get('classification', 'No disponible')} - {ml.get('j48_2025', {}).get('subtype', '')}"],
-        ["Ruta J48", ml.get('j48_2025', {}).get('route', 'No disponible')],
-        ["Probabilidad operativa", f"Global {ml.get('p_global', 0):.0%} | Temprana {ml.get('p_early', 0):.0%} | Tardía {ml.get('p_late', 0):.0%}"],
+        ["Modelo ML hemodinámico", f"{ml.get('model_name', 'Olano 2023 - árbol J48 de riesgo general de PE')}"],
+        ["Variables del modelo", ml.get('variables_modelo', 'CA/ICA, IC, ITC/ITS, CTE e IH')],
+        ["Alcance del ML", ml.get('scope', 'Riesgo general de preeclampsia; no clasifica PE temprana ni PE tardía.')],
+        ["Resultado ML", f"Riesgo general de PE: {ml.get('category')}"],
+        ["Probabilidad operativa", f"{ml.get('p_global', 0):.0%}"],
     ]
     t2 = Table(summary_rows, colWidths=[5.1 * cm, 12.0 * cm])
     t2.setStyle(TableStyle([
@@ -1327,7 +1241,7 @@ def make_pdf_report(
     kb = (
         "El módulo hemodinámico usa IC/IRV ajustados por edad gestacional y variables de ICG asociadas al modelo de ML "
         "(CA/ICA, IC, ITC/ITS, CTE e IH). La probabilidad mostrada es operativa e incorporada como base de conocimiento; para uso científico debe "
-        "reemplazarse por el árbol J48/modelo calibrado exacto y validado localmente."
+        "reemplazarse por el árbol J48 Olano 2023/modelo calibrado exacto de riesgo general de PE y validado localmente."
     )
     story.append(Paragraph(kb, styles["Small"]))
 
@@ -1390,7 +1304,7 @@ def load_model_config() -> Dict[str, Any]:
     """Carga el modelo interno sin solicitar puntos de corte al usuario.
 
     Los puntos de corte convencionales, la banda IC/IRV por edad gestacional y
-    el árbol J48 Olano 2025 quedan incorporados como base de conocimiento de la
+    el modelo Olano 2023 de riesgo general queda incorporado como base de conocimiento de la
     app. Esto evita errores de uso y mantiene reproducibilidad clínica.
     """
     cfg = json.loads(json.dumps(DEFAULT_MODEL_CONFIG))
@@ -1398,7 +1312,7 @@ def load_model_config() -> Dict[str, Any]:
     st.sidebar.info(
         "La app usa puntos de corte internos de la base de conocimiento: "
         "IC/IRV por edad gestacional, reglas hemodinámicas convencionales y "
-        "árbol J48 Olano 2025. No requiere cargar JSON ni ingresar umbrales."
+        "modelo Olano 2023 de riesgo general. No requiere cargar JSON ni ingresar umbrales."
     )
     return cfg
 
@@ -1522,18 +1436,16 @@ def render_results(results: Dict[str, Any], logo_bytes: Optional[bytes], firma_b
     recs = results["recommendations"]
 
     st.markdown("### Resultado automatizado")
-    j48 = ml.get("j48_2025", {})
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4 = st.columns(4)
     with k1:
         render_kpi("Clínico", clinical["diagnosis"], f"Nivel: {clinical['level']}", risk_level_to_color(clinical["level"]))
     with k2:
         render_kpi("Fenotipo hemodinámico", hemo["profile"], hemo["phenotype"], risk_level_to_color(hemo["severity"]))
     with k3:
-        render_kpi("ML global", ml["category"], ml["subtype"], risk_level_to_color(ml["category"]))
+        render_kpi("ML Olano 2023", f"Riesgo {ml['category']}", "Riesgo general de PE", risk_level_to_color(ml["category"]))
     with k4:
-        render_kpi("ML J48 2025", j48.get("classification", "No disponible"), j48.get("subtype", ""), risk_level_to_color(j48.get("category", ml["category"])))
-    with k5:
-        render_kpi("Probabilidad operativa", f"{ml['p_global']:.0%}", f"Temprana {ml['p_early']:.0%} | Tardía {ml['p_late']:.0%}", risk_level_to_color(ml["category"]))
+        render_kpi("Probabilidad operativa", f"{ml['p_global']:.0%}", "No diferencia subtipo temprano/tardío", risk_level_to_color(ml["category"]))
+    st.info("El modelo ML con CA/ICA, IC, ITC/ITS, CTE e IH informa riesgo general de preeclampsia. No debe informar subtipo temprano/tardío.")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -1544,9 +1456,10 @@ def render_results(results: Dict[str, Any], logo_bytes: Optional[bytes], firma_b
         st.metric("EA/EES", fmt_num(vars.get("AC"), 2), classify_coupling(vars.get("AC")))
 
     fig_ic_irv, fig_ic_irv_bytes = plot_ic_irv_vs_eg(vars, patient.get("edad_gestacional"))
-    fig_quad, fig_quad_bytes = plot_quadrant(hemo)
+    fig_quad, fig_quad_bytes = plot_quadrant_clinical(vars, patient.get("edad_gestacional"), hemo)
     st.pyplot(fig_ic_irv, clear_figure=False)
     st.pyplot(fig_quad, clear_figure=False)
+    render_quadrant_explanation(hemo)
 
     with st.expander("Detalle de variables y drivers del modelo", expanded=True):
         left, right = st.columns([1.2, 1])
@@ -1569,10 +1482,8 @@ def render_results(results: Dict[str, Any], logo_bytes: Optional[bytes], firma_b
             else:
                 st.write("Sin drivers mayores detectados.")
             st.caption(ml.get("note", ""))
-            st.write("**Diagnóstico ML J48 Olano 2025:**")
-            j48 = ml.get("j48_2025", {})
-            st.write(f"- {j48.get('classification', 'No disponible')} — {j48.get('subtype', '')}")
-            st.write(f"- Ruta: {j48.get('route', 'No disponible')}")
+            st.write("**Alcance del ML:**")
+            st.write("- Riesgo general de preeclampsia. No clasifica PE temprana ni PE tardía.")
 
     with st.expander("Conducta sugerida / apoyo terapéutico", expanded=True):
         for r in recs:
@@ -1618,9 +1529,8 @@ def build_markdown_report(results: Dict[str, Any]) -> str:
         f"**Edad gestacional:** {fmt_num(p.get('edad_gestacional'),1)} semanas",
         f"**Diagnóstico clínico:** {c.get('diagnosis')}",
         f"**Fenotipo hemodinámico:** {h.get('profile')} - {h.get('phenotype')}",
-        f"**ML hemodinámico:** Riesgo {m.get('category')} - {m.get('subtype')} ({m.get('p_global',0):.0%})",
-        f"**Diagnóstico ML J48 Olano 2025:** {m.get('j48_2025', {}).get('classification', 'No disponible')} - {m.get('j48_2025', {}).get('subtype', '')}",
-        f"**Ruta J48:** {m.get('j48_2025', {}).get('route', 'No disponible')}",
+        f"**ML hemodinámico Olano 2023:** Riesgo general de PE {m.get('category')} ({m.get('p_global',0):.0%})",
+        "**Alcance:** no clasifica PE temprana ni PE tardía.",
         "",
         "## Variables principales",
         f"- IC: {fmt_num(v.get('IC'),2)} L/min/m² ({h.get('ic_level')})",
@@ -1969,36 +1879,51 @@ def ortho_delta_df(acostado: Dict[str, Any], parado: Dict[str, Any]) -> pd.DataF
 
 
 def plot_orthostatic_shift(acostado: Dict[str, Any], parado: Dict[str, Any], eg: Optional[float]) -> Tuple[plt.Figure, bytes]:
-    ref = reference_at_week(eg)
+    """Desplazamiento ortostático con ejes reales IC/IRV."""
+    ref = reference_at_week(clean_num(eg))
     a_ic = clean_num(acostado.get("IC")); a_irv = clean_num(acostado.get("IRV"))
     p_ic = clean_num(parado.get("IC")); p_irv = clean_num(parado.get("IRV"))
-    a_zic = z_score(a_ic, ref["ic_media"], ref["ic_sd"])
-    a_zirv = z_score(a_irv, ref["irv_media"], ref["irv_sd"])
-    p_zic = z_score(p_ic, ref["ic_media"], ref["ic_sd"])
-    p_zirv = z_score(p_irv, ref["irv_media"], ref["irv_sd"])
-    fig, ax = plt.subplots(figsize=(6.4, 5.4))
-    ax.axhline(0, linewidth=1.2)
-    ax.axvline(0, linewidth=1.2)
-    ax.axhline(1, linestyle="--", linewidth=0.9)
-    ax.axhline(-1, linestyle="--", linewidth=0.9)
-    ax.axvline(1, linestyle="--", linewidth=0.9)
-    ax.axvline(-1, linestyle="--", linewidth=0.9)
-    ax.set_xlim(-4, 4); ax.set_ylim(-4, 4)
-    ax.set_xlabel("z IC por edad gestacional")
-    ax.set_ylabel("z IRV por edad gestacional")
-    ax.set_title("Desplazamiento ortostático: acostado → parado")
-    ax.text(-3.8, 3.6, "Hipodinamia\nIC bajo / IRV alta", fontsize=8, va="top")
-    ax.text(1.15, -3.7, "Hiperdinamia\nIC alto / IRV baja", fontsize=8, va="bottom")
-    if None not in [a_zic, a_zirv]:
-        ax.scatter([a_zic], [a_zirv], s=110, zorder=5, label="Acostado")
-        ax.annotate("Acostado", (a_zic, a_zirv), xytext=(8,8), textcoords="offset points")
-    if None not in [p_zic, p_zirv]:
-        ax.scatter([p_zic], [p_zirv], s=110, zorder=5, label="Parado")
-        ax.annotate("Parado", (p_zic, p_zirv), xytext=(8,8), textcoords="offset points")
-    if None not in [a_zic, a_zirv, p_zic, p_zirv]:
-        ax.annotate("", xy=(p_zic, p_zirv), xytext=(a_zic, a_zirv), arrowprops=dict(arrowstyle="->", lw=2.0))
+    ic_low = ref["ic_media"] - ref["ic_sd"]
+    ic_high = ref["ic_media"] + ref["ic_sd"]
+    irv_low = ref["irv_media"] - ref["irv_sd"]
+    irv_high = ref["irv_media"] + ref["irv_sd"]
+
+    x_vals = [ic_low, ic_high] + [v for v in [a_ic, p_ic] if v is not None]
+    y_vals = [irv_low, irv_high] + [v for v in [a_irv, p_irv] if v is not None]
+    x_min = max(0.5, min(x_vals) - 0.8); x_max = max(x_vals) + 0.8
+    y_min = max(400, min(y_vals) - 450); y_max = max(y_vals) + 450
+
+    fig, ax = plt.subplots(figsize=(7.0, 5.7))
+    ax.axvspan(ic_low, ic_high, alpha=0.12, label="IC esperado EG")
+    ax.axhspan(irv_low, irv_high, alpha=0.12, label="IRV esperado EG")
+    ax.axvline(ic_low, linestyle="--", linewidth=1.0)
+    ax.axvline(ic_high, linestyle="--", linewidth=1.0)
+    ax.axhline(irv_low, linestyle="--", linewidth=1.0)
+    ax.axhline(irv_high, linestyle="--", linewidth=1.0)
+
+    if None not in [a_ic, a_irv]:
+        ax.scatter([a_ic], [a_irv], s=120, zorder=5, label="Acostado")
+        ax.annotate(f"Acostado\nIC {fmt_num(a_ic,2)} / IRV {fmt_num(a_irv,0)}", (a_ic, a_irv), xytext=(8,8), textcoords="offset points")
+    if None not in [p_ic, p_irv]:
+        ax.scatter([p_ic], [p_irv], s=120, zorder=5, label="Parado")
+        ax.annotate(f"Parado\nIC {fmt_num(p_ic,2)} / IRV {fmt_num(p_irv,0)}", (p_ic, p_irv), xytext=(8,8), textcoords="offset points")
+    if None not in [a_ic, a_irv, p_ic, p_irv]:
+        ax.annotate("", xy=(p_ic, p_irv), xytext=(a_ic, a_irv), arrowprops=dict(arrowstyle="->", lw=2.2))
+        ax.text((a_ic+p_ic)/2, (a_irv+p_irv)/2, "acostado → parado", fontsize=8, ha="center", va="bottom")
+    else:
+        ax.text(0.5, 0.5, "Faltan IC o IRV en acostado/parado", transform=ax.transAxes, ha="center", va="center")
+
+    ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)
+    ax.set_xlabel("Índice cardíaco medido, IC (L/min/m²)")
+    ax.set_ylabel("Índice de resistencia vascular medido, IRV (dyn·s·cm⁻5·m²)")
+    ax.set_title("Desplazamiento ortostático IC/IRV: acostado → parado")
     ax.grid(True, alpha=0.22)
     ax.legend(fontsize=8)
+    ax.text(
+        0.5, -0.20,
+        f"Ejes en unidades reales. Referencia EG {fmt_num(ref['semana'],1)} sem: IC {fmt_num(ic_low,2)}-{fmt_num(ic_high,2)}; IRV {fmt_num(irv_low,0)}-{fmt_num(irv_high,0)}.",
+        transform=ax.transAxes, ha="center", va="top", fontsize=7.5, wrap=True
+    )
     fig.tight_layout()
     return fig, fig_to_png_bytes(fig)
 
@@ -2297,9 +2222,8 @@ def batch_flow(cfg: Dict[str, Any]) -> None:
                 "IRV": vars.get("IRV"),
                 "fenotipo": res["hemo"]["profile"],
                 "riesgo_ml": res["ml"]["category"],
-                "subtipo": res["ml"]["subtype"],
-                "diagnostico_j48_2025": res["ml"].get("j48_2025", {}).get("classification"),
-                "ruta_j48_2025": res["ml"].get("j48_2025", {}).get("route"),
+                "alcance_ml": res["ml"].get("scope"),
+                "modelo_ml": res["ml"].get("model_name"),
                 "p_global": res["ml"]["p_global"],
                 "diagnostico_clinico": res["clinical"]["diagnosis"],
             })
@@ -2321,19 +2245,14 @@ def knowledge_base_tab() -> None:
         - Clasifica: hipodinamia, normodinamia, hiperdinamia, IC normal con IRV inadecuadamente elevada, IC elevado con IRV normal.
         - Si se dispone RVS/TPVR no indexada, agrega criterio convencional de perfiles por resistencia total.
         
-        **Módulo ML hemodinámico operativo**
+        **Módulo ML hemodinámico operativo: Olano 2023**
         
         - Usa las variables centrales del modelo local: CA/ICA, IC, ITC/ITS, CTE e IH.
-        - Agrega poscarga IRV, acoplamiento EA/EES, CFT/volemia e IMC como moduladores clínicos.
-        - Entrega una probabilidad operativa y subtipo: PE temprana/placentaria, PE tardía/materno-metabólica o mixto.
+        - Entrega riesgo general de preeclampsia: bajo, intermedio o alto.
+        - No informa ni debe informar PE temprana o PE tardía, porque ese objetivo no corresponde al modelo con estas variables.
+        - IRV, EA/EES, CFT/volemia e IMC pueden mostrarse como contexto clínico/hemodinámico, pero no como diagnóstico ML de subtipo.
         
-        **Diagnóstico ML J48 Olano 2025 agregado**
-        
-        - Subclasifica PE temprana/tardía con STR/CTS, IA/IAC, ELV/EES y ACI/CA.
-        - Reglas incorporadas desde el árbol publicado: STR >43,37% → PE tardía; si STR ≤43,37% e IA ≤190,87 → PE tardía; si IA >190,87 y ELV >1,53 → PE temprana; si ELV ≤1,53 y STR >41,21% → PE temprana; si STR ≤41,21%, ACI ≤1,30 → PE tardía, ACI 1,30–1,51 → PE temprana y ACI >1,51 → PE tardía.
-        - Por seguridad, este J48 se usa como subdiagnóstico cuando existe activación clínica/hemodinámica o riesgo global operativo.
-        
-        **Importante:** el nodo inicial No PE del gráfico publicado no tiene umbral visible en el texto extraído; por eso la app conserva el score global operativo como compuerta de riesgo. Para publicación regulatoria debe incorporarse el árbol J48 completo desde Weka o el modelo calibrado con la base local, con ROC, calibración, DCA y auditoría de falsos positivos/negativos.
+        **Importante:** para diferenciar PE temprana vs tardía se requiere otro modelo explícitamente entrenado y validado con ese endpoint. Esta app deja el subtipo temprano/tardío fuera del diagnóstico ML.
         """
     )
     st.download_button("Descargar base de conocimiento interna", json.dumps(DEFAULT_MODEL_CONFIG, indent=2, ensure_ascii=False).encode("utf-8"), "base_conocimiento_ml_pe_icg.json", mime="application/json")

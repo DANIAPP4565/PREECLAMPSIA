@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# PDF report (ReportLab)
+# PDF report
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from reportlab.lib.pagesizes import A4
@@ -93,6 +93,8 @@ VARIABLE_INFO = {
     "VM": {"label": "Volumen Minuto", "unit": "L/min"}
 }
 
+# SOLUCIÓN DEL ERROR DE SINTAXIS: Línea 98 completamente cerrada y saneada
 REFERENCE_POINTS = [
     {"Fenotipo": "Hiperdinámico Puro", "IC": "Elevado (>4.2)", "IRV": "Bajo (<1400)", "RVS": "Baja", "Perfil Clínico": "Asociado a fases tempranas de gestación o preeclampsia precoz compensada. Alto volumen minuto."},
-    {"Fenotipo": "Resistivo / Vasoespasmo", "IC": "Bajo o Normal (<2.8)", "IRV": "Elevado (>2500)", "RVS": "Alta", "Perfil Clínico": "Típico de preeclampsia tardía, disfunción endotelial sever
+    {"Fenotipo": "Resistivo / Vasoespasmo", "IC": "Bajo o Normal (<2.8)", "IRV": "Elevado (>2500)", "RVS": "Alta", "Perfil Clínico": "Típico de preeclampsia tardía, disfunción endotelial severa o daño de órgano blanco."},
+    {"Fenotipo": "Desacoplado VA", "IC": "Variable", "IRV": "

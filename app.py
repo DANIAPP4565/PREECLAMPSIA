@@ -24,7 +24,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-# PDF report
+# PDF report (ReportLab)
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from reportlab.lib.pagesizes import A4
@@ -86,74 +86,4 @@ VARIABLE_INFO = {
     "PAS": {"label": "Presión Arterial Sistólica", "unit": "mmHg"},
     "PAD": {"label": "Presión Arterial Diastólica", "unit": "mmHg"},
     "PAM": {"label": "Presión Arterial Media", "unit": "mmHg"},
-    "DS": {"label": "Descarga Sistólica", "unit": "ml"},
-    "IDS": {"label": "Índice de Descarga Sistólica", "unit": "ml/m²"},
-    "Z0": {"label": "Impedancia Basal (Z0)", "unit": "ohms"},
-    "VM": {"label": "Volumen Minuto", "unit": "L/min"}
-}
-
-# SANEAMIENTO ABSOLUTO DEL SYNTAXERROR DE REFERENCE_POINTS
-REFERENCE_POINTS = [
-    {
-        "Fenotipo": "Hiperdinámico Puro",
-        "IC": "Elevado (>4.2)",
-        "IRV": "Bajo (<1400)",
-        "RVS": "Baja",
-        "Perfil Clínico": "Asociado a fases tempranas de gestación o preeclampsia precoz compensada. Alto volumen minuto."
-    },
-    {
-        "Fenotipo": "Resistivo / Vasoespasmo",
-        "IC": "Bajo o Normal (<2.8)",
-        "IRV": "Elevado (>2500)",
-        "RVS": "Alta",
-        "Perfil Clínico": "Típico de preeclampsia tardía, disfunción endotelial severa o daño de órgano blanco."
-    },
-    {
-        "Fenotipo": "Desacoplado VA",
-        "IC": "Variable",
-        "IRV": "Variable",
-        "RVS": "Variable",
-        "Perfil Clínico": "Relación Ea/Ees alterada (>1.2), contractilidad miocárdica insuficiente para el nivel de postcarga arterial."
-    }
-]
-
-@dataclass
-class ValueObject:
-    variable: str
-    value: float
-
-# =========================================================
-# FUNCIONES UTILITARIAS DE LIMPIEZA
-# =========================================================
-
-def clean_num(v: Any) -> Optional[float]:
-    if v is None:
-        return None
-    if isinstance(v, (int, float)):
-        return float(v)
-    try:
-        s = str(v).replace(",", ".").strip()
-        s = re.sub(r"[^\d\.\-]", "", s)
-        return float(s) if s else None
-    except:
-        return None
-
-def normalize_ratio_if_percent(var_name: str, val: float) -> float:
-    if var_name in ["CTE", "CTS"] and val > 1.0:
-        return val / 100.0
-    return val
-
-def inject_css() -> None:
-    st.markdown(
-        """
-        <style>
-        .main { background-color: #fcfdfd; }
-        .card {
-            background-color: #ffffff;
-            padding: 18px;
-            border-radius: 8px;
-            border: 1px solid #e2e8f0;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-            margin-bottom: 16px;
-        }
-        .metric-title { font-size: 0.85rem; color: #64748b; font-weight: 700; text-transform:
+    "DS": {"label": "Desc

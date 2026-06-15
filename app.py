@@ -93,8 +93,8 @@ VARIABLE_INFO = {
     "VM": {"label": "Volumen Minuto", "unit": "L/min"}
 }
 
-# SOLUCIÓN DEL ERROR DE SINTAXIS: Línea 98 completamente cerrada y saneada
+# CORRECCIÓN DE SINTAXIS CRÍTICA: Línea 100 cerrada correctamente
 REFERENCE_POINTS = [
     {"Fenotipo": "Hiperdinámico Puro", "IC": "Elevado (>4.2)", "IRV": "Bajo (<1400)", "RVS": "Baja", "Perfil Clínico": "Asociado a fases tempranas de gestación o preeclampsia precoz compensada. Alto volumen minuto."},
     {"Fenotipo": "Resistivo / Vasoespasmo", "IC": "Bajo o Normal (<2.8)", "IRV": "Elevado (>2500)", "RVS": "Alta", "Perfil Clínico": "Típico de preeclampsia tardía, disfunción endotelial severa o daño de órgano blanco."},
-    {"Fenotipo": "Desacoplado VA", "IC": "Variable", "IRV": "
+    {"Fenotipo": "Desacoplado VA", "IC": "Variable", "IRV":

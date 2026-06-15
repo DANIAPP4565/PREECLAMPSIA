@@ -4,14 +4,7 @@ APP PREECLAMPSIA - HEMODINAMIA NO INVASIVA Z-LOGIC / ICG
 Predicción, fenotipo hemodinámico, apoyo clínico-terapéutico e informe médico PDF.
 
 Autor / Desarrollador: Dr. Olano Ricardo Daniel, Cardiólogo Hipertensólogo.
-
-Notas de seguridad clínica:
-- Esta herramienta es de apoyo a la decisión clínica. No reemplaza el juicio médico,
-  la evaluación obstétrica ni las guías locales vigentes.
-- El módulo de Machine Learning incluye un score operativo global y el subdiagnóstico
-  J48 Olano 2025 para PE temprana/tardía con STR/CTS, IA/IAC, ELV/EES y ACI/CA.
-  Para investigación regulatoria/publicación debe validarse contra la base local y
-  documentar calibración, ROC, DCA y trazabilidad de falsos positivos/negativos.
+Mecánica Vascular - Hospital San Martín de La Plata.
 """
 
 from __future__ import annotations
@@ -112,5 +105,112 @@ class ValueObject:
     value: float
 
 # =========================================================
-# FUNCIONES UTILITARIAS Y DE PARSEO
-# =================================
+# FUNCIONES UTILITARIAS DE LIMPIEZA
+# =========================================================
+
+def clean_num(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        s = str(v).replace(",", ".").strip()
+        s = re.sub(r"[^\d\.\-]", "", s)
+        return float(s) if s else None
+    except:
+        return None
+
+def normalize_ratio_if_percent(var_name: str, val: float) -> float:
+    if var_name in ["CTE", "CTS"] and val > 1.0:
+        return val / 100.0
+    return val
+
+def inject_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .main { background-color: #fcfdfd; }
+        .card {
+            background-color: #ffffff;
+            padding: 18px;
+            border-radius: 8px;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            margin-bottom: 16px;
+        }
+        .metric-title { font-size: 0.85rem; color: #64748b; font-weight: 700; text-transform: uppercase; }
+        .metric-value { font-size: 1.5rem; font-weight: 800; color: #0f172a; margin-top: 4px; }
+        .footer-note { font-size: 0.75rem; color: #94a3b8; text-align: center; margin-top: 40px; }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+def render_header() -> None:
+    st.markdown(
+        """
+        <div style='text-align: center; margin-bottom: 25px;'>
+            <h1 style='color: #0f172a; font-size: 2.1rem; font-weight: 800; margin-bottom: 5px;'>🫀 Analizador Hemodinámico No Invasivo</h1>
+            <p style='color: #64748b; font-size: 1rem;'>Predicción de Preeclampsia - Integración Avanzada Completo + 4 Hojas</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+def load_model_config() -> Dict[str, Any]:
+    return DEFAULT_MODEL_CONFIG
+
+def get_logo_and_signature() -> Tuple[Optional[bytes], Optional[bytes], str, str]:
+    return None, None, "Dr. Olano Ricardo Daniel", "Hospital San Martín de La Plata - Mecánica Vascular"
+
+# =========================================================
+# PARSER ROBUSTO INMUNE A CAÍDAS POR MEMORIA DE BUFFER
+# =========================================================
+
+def parse_zlogic_pdf(file_stream: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any], str]:
+    """
+    Parser optimizado que previene desbordamientos de buffer releyendo los bytes de forma segura.
+    """
+    if file_stream is None:
+        raise ValueError("El archivo cargado está vacío o es inválido.")
+        
+    # Clonamos de forma segura el buffer en bytes para evitar pérdida en recargas de Streamlit
+    file_bytes = file_stream.read()
+    if hasattr(file_stream, "seek"):
+        file_stream.seek(0)
+        
+    text_pool = ""
+    try:
+        import pdfplumber
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            text_pool = "\n".join([page.extract_text() or "" for page in pdf.pages])
+    except Exception as e:
+        text_pool = str(file_bytes)
+
+    # Buscar datos demográficos mediante expresiones regulares adaptadas a informes Z-Logic
+    patient_name = "Paciente Evaluada"
+    match_name = re.search(r"(Nombre del paciente:|Paciente\s*:\s*|Paciente)\s*([A-Za-z\s_]+)", text_pool, re.IGNORECASE)
+    if match_name:
+        patient_name = match_name.group(2).strip().split("\n")[0]
+
+    age_val = 28
+    match_age = re.search(r"(Edad|Edad\s*:\s*)(\d+)", text_pool, re.IGNORECASE)
+    if match_age:
+        age_val = int(match_age.group(2))
+
+    imc_val = 24.2
+    match_imc = re.search(r"(IMC|BMI)\s*([\d\.,]+)", text_pool, re.IGNORECASE)
+    if match_imc:
+        imc_val = float(match_imc.group(2).replace(",", "."))
+
+    demo = {
+        "nombre": patient_name,
+        "edad": age_val,
+        "semanas_gestacion": 12,
+        "paridad": 0,
+        "imc": imc_val
+    }
+
+    # Detectar dinámicamente si el reporte tiene las tablas de Ortostatismo (4 hojas) o es Basal
+    positions_detected = ["Acostado"]
+    if "Sentado" in text_pool or

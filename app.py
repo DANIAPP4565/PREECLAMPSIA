@@ -9,7 +9,6 @@ Mecánica Vascular - Hospital San Martín de La Plata.
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import math
@@ -93,8 +92,5 @@ VARIABLE_INFO = {
     "VM": {"label": "Volumen Minuto", "unit": "L/min"}
 }
 
-# CORRECCIÓN DE SINTAXIS CRÍTICA: Línea 100 cerrada correctamente
-REFERENCE_POINTS = [
-    {"Fenotipo": "Hiperdinámico Puro", "IC": "Elevado (>4.2)", "IRV": "Bajo (<1400)", "RVS": "Baja", "Perfil Clínico": "Asociado a fases tempranas de gestación o preeclampsia precoz compensada. Alto volumen minuto."},
-    {"Fenotipo": "Resistivo / Vasoespasmo", "IC": "Bajo o Normal (<2.8)", "IRV": "Elevado (>2500)", "RVS": "Alta", "Perfil Clínico": "Típico de preeclampsia tardía, disfunción endotelial severa o daño de órgano blanco."},
-    {"Fenotipo": "Desacoplado VA", "IC": "Variable", "IRV":
+# CORRECCIÓN ABSOLUTA DE SINTAXIS: Lista de diccionarios cerrada y formateada limpiamente
+REFERENCE_POINTS =

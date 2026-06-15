@@ -8,8 +8,10 @@ Autor / Desarrollador: Dr. Olano Ricardo Daniel, Cardiólogo Hipertensólogo.
 Notas de seguridad clínica:
 - Esta herramienta es de apoyo a la decisión clínica. No reemplaza el juicio médico,
   la evaluación obstétrica ni las guías locales vigentes.
-- El módulo de Machine Learning basado en CA/ICA, IC, ITC/ITS, CTE e IH
-  estima riesgo general de preeclampsia. No clasifica preeclampsia temprana ni tardía.
+- El módulo de Machine Learning Olano 2023 basado en CA/ICA, IC, ITC/ITS, CTE e IH
+  estima riesgo general de preeclampsia.
+- Se agrega un segundo módulo Olano 2025 para subclasificar el patrón de riesgo como
+  preeclampsia temprana o tardía con STR/CTS, IA/IAC, ELV/EES y ACI/CA.
   Para investigación regulatoria/publicación debe validarse contra la base local y
   documentar calibración, ROC, DCA y trazabilidad de falsos positivos/negativos.
 """
@@ -68,16 +70,16 @@ st.set_page_config(
 APP_TITLE = "Predicción, manejo clínico y terapéutico de preeclampsia por hemodinamia ICG"
 APP_SUBTITLE = "Importación PDF Z-Logic, fenotipo IC/IRV por edad gestacional, reglas convencionales + ML hemodinámico"
 AUTHOR = "Dr. Olano Ricardo Daniel - Cardiólogo Hipertensólogo"
-APP_VERSION_VISIBLE = "Versión 2026-06-15c · DOS PDF OBLIGATORIOS · EJES CLÍNICOS IC/IRV EXPLICADOS · ML PE GENERAL"
+APP_VERSION_VISIBLE = "Versión 2026-06-15d · DOS PDF OBLIGATORIOS · ML PE GENERAL OLANO 2023 + SUBTIPO TEMPRANA/TARDÍA OLANO 2025"
 
 
 DEFAULT_MODEL_CONFIG: Dict[str, Any] = {
-    "version": "ZLogic-ICG-PE-v1.3-Olano-2023-Riesgo-General",
+    "version": "ZLogic-ICG-PE-v1.4-Olano-2023-General-Olano-2025-Temprana-Tardia",
     "notas": (
         "Modelo ML operativo de riesgo general de preeclampsia basado en las variables "
         "publicadas por Olano et al. 2023: CA/ICA, IC, ITC/ITS, CTE e IH. "
-        "Este modelo NO diferencia PE temprana vs PE tardía; esa diferenciación no debe "
-        "mostrarse como diagnóstico ML con estas variables."
+        "Además, se informa en forma separada el submodelo Olano 2025 para orientar "
+        "riesgo de PE temprana vs tardía con STR/CTS, IA/IAC, ELV/EES y ACI/CA."
     ),
     "z_ic_bajo": -1.0,
     "z_ic_alto": 1.0,
@@ -91,6 +93,14 @@ DEFAULT_MODEL_CONFIG: Dict[str, Any] = {
     "ac_desacoplado": 1.30,
     "prob_bajo": 0.25,
     "prob_alto": 0.60,
+    "olano2025_temprana_tardia": {
+        "str_alto_tardia": 43.37,
+        "ia_baja_tardia": 190.87,
+        "elv_alta_temprana": 1.53,
+        "str_intermedia_temprana": 41.21,
+        "aci_baja_tardia": 1.30,
+        "aci_intermedia_temprana": 1.51,
+    },
     "pesos_pe_general": {
         "ca_baja": 1.25,
         "ic_anormal": 1.10,
@@ -830,13 +840,121 @@ def logistic(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
+def ratio_to_percent_for_olano2025(value: Any) -> Optional[float]:
+    """Normaliza STR/CTS a porcentaje para aplicar los umbrales del árbol Olano 2025.
+
+    Z-Logic puede exportar CTS como 36 o como 0,36. El árbol 2025 usa umbrales
+    en escala porcentual, por ejemplo 43,37 y 41,21.
+    """
+    v = clean_num(value)
+    if v is None:
+        return None
+    return v * 100.0 if v <= 2 else v
+
+
+def olano2025_temprana_tardia(vars: Dict[str, float], cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Submodelo Olano 2025 para orientar riesgo de PE temprana vs tardía.
+
+    Es independiente del modelo Olano 2023 de riesgo general. Usa STR/CTS,
+    IA/IAC, ELV/EES y ACI/CA. Devuelve No clasificable si faltan variables.
+    """
+    jcfg = cfg.get("olano2025_temprana_tardia", {}) or {}
+    str_cut_high = float(jcfg.get("str_alto_tardia", 43.37))
+    ia_cut = float(jcfg.get("ia_baja_tardia", 190.87))
+    elv_cut = float(jcfg.get("elv_alta_temprana", 1.53))
+    str_cut_mid = float(jcfg.get("str_intermedia_temprana", 41.21))
+    aci_cut_low = float(jcfg.get("aci_baja_tardia", 1.30))
+    aci_cut_high = float(jcfg.get("aci_intermedia_temprana", 1.51))
+
+    str_percent = ratio_to_percent_for_olano2025(vars.get("CTS"))
+    ia = clean_num(vars.get("IAC"))
+    elv = clean_num(vars.get("EES"))
+    aci = clean_num(vars.get("CA"))
+
+    missing = []
+    if str_percent is None:
+        missing.append("STR/CTS")
+    if ia is None:
+        missing.append("IA/IAC")
+    if elv is None:
+        missing.append("ELV/EES")
+    if aci is None:
+        missing.append("ACI/CA")
+    if missing:
+        return {
+            "available": False,
+            "category": "NO CLASIFICABLE",
+            "classification": "No clasificable por Olano 2025",
+            "subtype": "Faltan variables: " + ", ".join(missing),
+            "route": "Faltan variables críticas para aplicar el árbol Olano 2025.",
+            "variables": {"STR_percent": str_percent, "IA": ia, "ELV": elv, "ACI": aci},
+            "model_name": "Olano 2025 - PE temprana vs tardía",
+        }
+
+    path = [f"STR/CTS={str_percent:.2f}%"]
+    if str_percent > str_cut_high:
+        path.append(f"> {str_cut_high:.2f}%")
+        cls = "Riesgo orientado a PE tardía"
+        subtype = "Predominio PE tardía / materno-metabólica"
+        category = "TARDÍA"
+    else:
+        path.append(f"<= {str_cut_high:.2f}%")
+        path.append(f"IA/IAC={ia:.2f}")
+        if ia <= ia_cut:
+            path.append(f"<= {ia_cut:.2f}")
+            cls = "Riesgo orientado a PE tardía"
+            subtype = "Predominio PE tardía / materno-metabólica"
+            category = "TARDÍA"
+        else:
+            path.append(f"> {ia_cut:.2f}")
+            path.append(f"ELV/EES={elv:.2f}")
+            if elv > elv_cut:
+                path.append(f"> {elv_cut:.2f}")
+                cls = "Riesgo orientado a PE temprana"
+                subtype = "Predominio PE temprana / placentaria"
+                category = "TEMPRANA"
+            else:
+                path.append(f"<= {elv_cut:.2f}")
+                if str_percent > str_cut_mid:
+                    path.append(f"STR/CTS > {str_cut_mid:.2f}%")
+                    cls = "Riesgo orientado a PE temprana"
+                    subtype = "Predominio PE temprana / placentaria"
+                    category = "TEMPRANA"
+                else:
+                    path.append(f"STR/CTS <= {str_cut_mid:.2f}%")
+                    path.append(f"ACI/CA={aci:.2f}")
+                    if aci <= aci_cut_low:
+                        path.append(f"<= {aci_cut_low:.2f}")
+                        cls = "Riesgo orientado a PE tardía"
+                        subtype = "Predominio PE tardía / materno-metabólica"
+                        category = "TARDÍA"
+                    elif aci <= aci_cut_high:
+                        path.append(f"> {aci_cut_low:.2f} y <= {aci_cut_high:.2f}")
+                        cls = "Riesgo orientado a PE temprana"
+                        subtype = "Predominio PE temprana / placentaria"
+                        category = "TEMPRANA"
+                    else:
+                        path.append(f"> {aci_cut_high:.2f}")
+                        cls = "Riesgo orientado a PE tardía"
+                        subtype = "Predominio PE tardía / materno-metabólica"
+                        category = "TARDÍA"
+
+    return {
+        "available": True,
+        "category": category,
+        "classification": cls,
+        "subtype": subtype,
+        "route": " → ".join(path),
+        "variables": {"STR_percent": str_percent, "IA": ia, "ELV": elv, "ACI": aci},
+        "model_name": "Olano 2025 - PE temprana vs tardía",
+    }
+
+
 def ml_hemodynamic_risk(vars: Dict[str, float], eg: Optional[float], clinical: Dict[str, Any], hemo: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Riesgo general de preeclampsia por ML hemodinámico Olano 2023.
 
-    Importante: el modelo publicado con CA/ICA, IC, ITC/ITS, CTE e IH predice
-    desarrollo de preeclampsia como evento global. No diferencia PE temprana ni
-    PE tardía. La app informa esa limitación explícitamente en pantalla, PDF,
-    Markdown y Excel.
+    El resultado temprano/tardío se informa por separado con el submodelo Olano 2025,
+    porque corresponde a otro endpoint y a otro árbol de decisión.
     """
     zic = hemo.get("z_ic")
     ca = clean_num(vars.get("CA"))
@@ -875,8 +993,9 @@ def ml_hemodynamic_risk(vars: Dict[str, float], eg: Optional[float], clinical: D
         category = "BAJO"
 
     drivers = [k for k, v in flags.items() if v]
-    scope = "Riesgo general de preeclampsia; no clasifica PE temprana ni PE tardía."
-    diagnosis_ml = f"Riesgo general de PE {category}. {scope}"
+    scope = "Riesgo general de preeclampsia por Olano 2023. Subtipo temprana/tardía informado aparte por Olano 2025."
+    olano2025 = olano2025_temprana_tardia(vars, cfg)
+    diagnosis_ml = f"Riesgo general de PE {category}. Olano 2025: {olano2025.get('classification')}"
     return {
         "category": category,
         "subtype": scope,
@@ -888,6 +1007,7 @@ def ml_hemodynamic_risk(vars: Dict[str, float], eg: Optional[float], clinical: D
         "note": cfg.get("notas", ""),
         "model_name": "Olano 2023 - árbol J48 de riesgo general de PE",
         "variables_modelo": "CA/ICA, IC, ITC/ITS, CTE e IH",
+        "olano2025": olano2025,
     }
 
 
@@ -1185,9 +1305,11 @@ def make_pdf_report(
         ["Interpretación", hemo.get("phenotype", "No disponible")],
         ["Modelo ML hemodinámico", f"{ml.get('model_name', 'Olano 2023 - árbol J48 de riesgo general de PE')}"],
         ["Variables del modelo", ml.get('variables_modelo', 'CA/ICA, IC, ITC/ITS, CTE e IH')],
-        ["Alcance del ML", ml.get('scope', 'Riesgo general de preeclampsia; no clasifica PE temprana ni PE tardía.')],
-        ["Resultado ML", f"Riesgo general de PE: {ml.get('category')}"],
+        ["Alcance del ML", ml.get('scope', 'Riesgo general de preeclampsia por Olano 2023; subtipo por Olano 2025.')],
+        ["Resultado ML Olano 2023", f"Riesgo general de PE: {ml.get('category')}"],
         ["Probabilidad operativa", f"{ml.get('p_global', 0):.0%}"],
+        ["Submodelo Olano 2025", f"{ml.get('olano2025', {}).get('classification', 'No disponible')} - {ml.get('olano2025', {}).get('subtype', '')}"],
+        ["Ruta Olano 2025", ml.get('olano2025', {}).get('route', 'No disponible')],
     ]
     t2 = Table(summary_rows, colWidths=[5.1 * cm, 12.0 * cm])
     t2.setStyle(TableStyle([
@@ -1436,7 +1558,7 @@ def render_results(results: Dict[str, Any], logo_bytes: Optional[bytes], firma_b
     recs = results["recommendations"]
 
     st.markdown("### Resultado automatizado")
-    k1, k2, k3, k4 = st.columns(4)
+    k1, k2, k3, k4, k5 = st.columns(5)
     with k1:
         render_kpi("Clínico", clinical["diagnosis"], f"Nivel: {clinical['level']}", risk_level_to_color(clinical["level"]))
     with k2:
@@ -1444,8 +1566,11 @@ def render_results(results: Dict[str, Any], logo_bytes: Optional[bytes], firma_b
     with k3:
         render_kpi("ML Olano 2023", f"Riesgo {ml['category']}", "Riesgo general de PE", risk_level_to_color(ml["category"]))
     with k4:
-        render_kpi("Probabilidad operativa", f"{ml['p_global']:.0%}", "No diferencia subtipo temprano/tardío", risk_level_to_color(ml["category"]))
-    st.info("El modelo ML con CA/ICA, IC, ITC/ITS, CTE e IH informa riesgo general de preeclampsia. No debe informar subtipo temprano/tardío.")
+        render_kpi("Probabilidad operativa", f"{ml['p_global']:.0%}", "Riesgo general de PE", risk_level_to_color(ml["category"]))
+    with k5:
+        ol25 = ml.get("olano2025", {})
+        render_kpi("Olano 2025", ol25.get("category", "No clas."), ol25.get("classification", "Subtipo temprana/tardía"), risk_level_to_color("intermedio" if ol25.get("available") else "bajo"))
+    st.info("La app informa dos salidas separadas: Olano 2023 estima riesgo general de preeclampsia; Olano 2025 orienta el subtipo de riesgo como PE temprana o PE tardía cuando STR/CTS, IA/IAC, ELV/EES y ACI/CA están disponibles.")
 
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -1483,7 +1608,12 @@ def render_results(results: Dict[str, Any], logo_bytes: Optional[bytes], firma_b
                 st.write("Sin drivers mayores detectados.")
             st.caption(ml.get("note", ""))
             st.write("**Alcance del ML:**")
-            st.write("- Riesgo general de preeclampsia. No clasifica PE temprana ni PE tardía.")
+            st.write("- Olano 2023: riesgo general de preeclampsia.")
+            st.write("- Olano 2025: subtipo de riesgo temprana/tardía.")
+            ol25 = ml.get("olano2025", {})
+            st.write("**Submodelo Olano 2025:**")
+            st.write(f"- {ol25.get('classification', 'No disponible')}: {ol25.get('subtype', '')}")
+            st.write(f"- Ruta: {ol25.get('route', 'No disponible')}")
 
     with st.expander("Conducta sugerida / apoyo terapéutico", expanded=True):
         for r in recs:
@@ -1530,7 +1660,8 @@ def build_markdown_report(results: Dict[str, Any]) -> str:
         f"**Diagnóstico clínico:** {c.get('diagnosis')}",
         f"**Fenotipo hemodinámico:** {h.get('profile')} - {h.get('phenotype')}",
         f"**ML hemodinámico Olano 2023:** Riesgo general de PE {m.get('category')} ({m.get('p_global',0):.0%})",
-        "**Alcance:** no clasifica PE temprana ni PE tardía.",
+        f"**ML Olano 2025:** {m.get('olano2025', {}).get('classification', 'No disponible')} - {m.get('olano2025', {}).get('subtype', '')}",
+        f"**Ruta Olano 2025:** {m.get('olano2025', {}).get('route', 'No disponible')}",
         "",
         "## Variables principales",
         f"- IC: {fmt_num(v.get('IC'),2)} L/min/m² ({h.get('ic_level')})",
@@ -2221,10 +2352,14 @@ def batch_flow(cfg: Dict[str, Any]) -> None:
                 "IC": vars.get("IC"),
                 "IRV": vars.get("IRV"),
                 "fenotipo": res["hemo"]["profile"],
-                "riesgo_ml": res["ml"]["category"],
+                "riesgo_ml_general_olano2023": res["ml"]["category"],
+                "p_global": res["ml"]["p_global"],
+                "olano2025_categoria": res["ml"].get("olano2025", {}).get("category"),
+                "olano2025_clasificacion": res["ml"].get("olano2025", {}).get("classification"),
+                "olano2025_subtipo": res["ml"].get("olano2025", {}).get("subtype"),
+                "olano2025_ruta": res["ml"].get("olano2025", {}).get("route"),
                 "alcance_ml": res["ml"].get("scope"),
                 "modelo_ml": res["ml"].get("model_name"),
-                "p_global": res["ml"]["p_global"],
                 "diagnostico_clinico": res["clinical"]["diagnosis"],
             })
         out = pd.DataFrame(results_rows)
@@ -2249,10 +2384,15 @@ def knowledge_base_tab() -> None:
         
         - Usa las variables centrales del modelo local: CA/ICA, IC, ITC/ITS, CTE e IH.
         - Entrega riesgo general de preeclampsia: bajo, intermedio o alto.
-        - No informa ni debe informar PE temprana o PE tardía, porque ese objetivo no corresponde al modelo con estas variables.
-        - IRV, EA/EES, CFT/volemia e IMC pueden mostrarse como contexto clínico/hemodinámico, pero no como diagnóstico ML de subtipo.
+        - No debe usarse para subtipo temprano/tardío, porque su endpoint es PE general.
         
-        **Importante:** para diferenciar PE temprana vs tardía se requiere otro modelo explícitamente entrenado y validado con ese endpoint. Esta app deja el subtipo temprano/tardío fuera del diagnóstico ML.
+        **Módulo ML hemodinámico operativo: Olano 2025**
+        
+        - Usa STR/CTS, IA/IAC, ELV/EES y ACI/CA.
+        - Entrega orientación de subtipo de riesgo: PE temprana/placentaria o PE tardía/materno-metabólica.
+        - Se muestra como resultado separado y complementario del riesgo general.
+        
+        **Importante:** la app informa ambos modelos por separado para no mezclar endpoints: Olano 2023 = riesgo general de PE; Olano 2025 = orientación temprana/tardía.
         """
     )
     st.download_button("Descargar base de conocimiento interna", json.dumps(DEFAULT_MODEL_CONFIG, indent=2, ensure_ascii=False).encode("utf-8"), "base_conocimiento_ml_pe_icg.json", mime="application/json")

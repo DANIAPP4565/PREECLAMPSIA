@@ -138,9 +138,7 @@ VARIABLE_INFO: Dict[str, Dict[str, str]] = {
     "IV": {"label": "Índice de velocidad", "unit": "1000/s", "group": "Contractilidad"},
     "CFT": {"label": "Contenido de fluido torácico", "unit": "kΩ⁻¹", "group": "Volemia"},
     "CFTnr": {"label": "Contenido de fluido torácico normalizado", "unit": "índice", "group": "Volemia"},
-    "EA": {"label": "Elastancia arterial", "unit": "mmHg/mL", "group": "Acoplamiento"},
     "EES": {"label": "Elastancia ventricular telesistólica", "unit": "mmHg/mL", "group": "Acoplamiento"},
-    "AC": {"label": "Acoplamiento ventrículo-arterial EA/EES", "unit": "relación", "group": "Acoplamiento"},
     "FC": {"label": "Frecuencia cardíaca", "unit": "lpm", "group": "General"},
     "PAS": {"label": "Presión sistólica", "unit": "mmHg", "group": "Presión"},
     "PAD": {"label": "Presión diastólica", "unit": "mmHg", "group": "Presión"},
@@ -198,9 +196,7 @@ VAR_SYNONYMS: Dict[str, List[str]] = {
     "IV": ["indice de velocidad", "índice de velocidad", "velocity index", "iv"],
     "CFTnr": ["cftnr", "cft nr", "tfc index", "thoracic fluid index", "contenido de fluidos toracicos normalizado"],
     "CFT": ["contenido de fluido toracico", "contenido de fluidos toracicos", "contenido de fluido torácico", "thoracic fluid content", "tfc", "cft"],
-    "EA": ["elastancia arterial", "arterial elastance", "ea"],
     "EES": ["elastancia telesistolica", "elastancia ventricular", "end systolic elastance", "end-systolic ventricular elastance", "left ventricular end systolic elastance", "left ventricular end-systolic elastance", "elv", "ees"],
-    "AC": ["acoplamiento ventriculo arterial", "acoplamiento ventrículo arterial", "ventricular arterial coupling", "ea/ees", "ava", "ac"],
     "FC": ["frecuencia cardiaca", "frecuencia cardíaca", "heart rate", "hr", "fc"],
     "PAS": ["presion sistolica", "presión sistólica", "systolic blood pressure", "sbp", "pas"],
     "PAD": ["presion diastolica", "presión diastólica", "diastolic blood pressure", "dbp", "pad"],
@@ -227,9 +223,7 @@ PLAUSIBLE_RANGES: Dict[str, Tuple[float, float]] = {
     "IV": (0.1, 200.0),
     "CFT": (5, 120),
     "CFTnr": (1, 200),
-    "EA": (0.05, 10.0),
     "EES": (0.05, 20.0),
-    "AC": (0.05, 6.0),
     "FC": (35, 190),
     "PAS": (60, 260),
     "PAD": (30, 160),
@@ -247,8 +241,6 @@ BLOCKERS: Dict[str, List[str]] = {
     "IC": ["itc", "indice de trabajo", "trabajo cardiaco", "trabajo cardíaco", "cft", "tfc", "iac", "ih", "cts", "cte", "ca", "irv"],
     "CA": ["cardiaco", "cardíaco", "cardiac index", "cardiac output", "iac", "aceleracion", "acceleration"],
     "IAC": ["compliance", "complacencia", "arterial compliance"],
-    "AC": ["iac", "aceleracion", "acceleration", "cft", "tfc"],
-    "EA": ["ees"],
 }
 
 
@@ -649,9 +641,6 @@ def editor_df_to_variables(df: pd.DataFrame) -> Dict[str, float]:
         if var and val is not None:
             out[var] = float(val)
     # Deducciones útiles.
-    if "AC" not in out and out.get("EA") and out.get("EES"):
-        if out["EES"] != 0:
-            out["AC"] = out["EA"] / out["EES"]
     if "PAM" not in out and out.get("PAS") and out.get("PAD"):
         out["PAM"] = (out["PAS"] + 2 * out["PAD"]) / 3
     return out
@@ -763,17 +752,6 @@ def classify_hemodynamic(vars: Dict[str, float], eg: Optional[float], cfg: Dict[
         "ref": ref,
         "conventional_rvs": conventional_rvs,
     }
-
-
-def classify_coupling(ac: Optional[float]) -> str:
-    acv = clean_num(ac)
-    if acv is None:
-        return "No disponible"
-    if acv < 1:
-        return "Óptimo"
-    if acv <= 1.3:
-        return "Subóptimo"
-    return "Desacoplamiento ventrículo-arterial"
 
 
 def classify_volemia(cft: Optional[float], sex: str = "Mujer") -> str:
@@ -962,7 +940,6 @@ def ml_hemodynamic_risk(vars: Dict[str, float], eg: Optional[float], clinical: D
     cte = clean_num(vars.get("CTE"))
     cts = clean_num(vars.get("CTS"))
     itc = clean_num(vars.get("ITC"))
-    ac = clean_num(vars.get("AC"))
 
     ic_anormal = zic is not None and (zic <= cfg.get("z_ic_bajo", -1.0) or zic >= cfg.get("z_ic_alto", 1.0))
     perfil_alterado = hemo.get("profile") not in {"NORMODINAMIA", "No clasificable", "Datos insuficientes"}
@@ -976,7 +953,6 @@ def ml_hemodynamic_risk(vars: Dict[str, float], eg: Optional[float], clinical: D
         "hta": bool(clinical.get("hta")),
         "proteinuria_o_disfuncion": bool(clinical.get("organ")),
         "perfil_hemodinamico_alterado": bool(perfil_alterado),
-        "ac_desacoplado": ac is not None and ac > cfg.get("ac_desacoplado", 1.30),
     }
 
     score = -2.35
@@ -1039,9 +1015,6 @@ def therapeutic_recommendations(eg: Optional[float], vars: Dict[str, float], cli
         recs.append("Fenotipo vasoconstrictor/placentario: evitar interpretar solo la PA; priorizar control de poscarga, perfusión uteroplacentaria y vigilancia de crecimiento fetal.")
     elif "HIPERDINAMIA" in profile or "IC ELEVADO" in profile:
         recs.append("Fenotipo hiperdinámico: correlacionar con IMC, FC, volemia y PA; ajustar estrategia para no agravar taquicardia o hiperflujo.")
-
-    if clean_num(vars.get("AC")) is not None and clean_num(vars.get("AC")) > 1.3:
-        recs.append("Acoplamiento ventrículo-arterial desacoplado: sugiere mayor carga cardiovascular; controlar evolución y considerar evaluación cardiovascular posparto.")
 
     if not recs:
         recs.append("Sin alertas mayores con los datos actuales; mantener control prenatal y repetir ICG si cambia el cuadro clínico o la PA.")
@@ -1323,7 +1296,7 @@ def make_pdf_report(
     story.append(t2)
 
     story.append(Paragraph("2. Variables hemodinámicas principales", styles["Section"]))
-    key_vars = ["IC", "IRV", "RVS", "CA", "ITC", "CTE", "CTS", "IH", "IAC", "CFT", "EA", "EES", "AC", "FC", "PAS", "PAD"]
+    key_vars = ["IC", "IRV", "RVS", "CA", "ITC", "CTE", "CTS", "IH", "IAC", "CFT", "EES", "FC", "PAS", "PAD"]
     rows = [["Variable", "Valor", "Unidad", "Interpretación"]]
     for var in key_vars:
         if var in vars and clean_num(vars[var]) is not None:
@@ -1332,8 +1305,6 @@ def make_pdf_report(
                 interp = hemo.get("ic_level", "")
             elif var == "IRV":
                 interp = hemo.get("irv_level", "")
-            elif var == "AC":
-                interp = classify_coupling(vars.get(var))
             elif var == "CFT":
                 interp = classify_volemia(vars.get(var))
             rows.append([f"{var} - {VARIABLE_INFO[var]['label']}", fmt_num(vars[var], 2 if var not in {"IRV", "RVS", "FC", "PAS", "PAD"} else 0), VARIABLE_INFO[var]["unit"], interp])
@@ -1578,7 +1549,7 @@ def render_results(results: Dict[str, Any], logo_bytes: Optional[bytes], firma_b
     with c2:
         st.metric("IRV", fmt_num(vars.get("IRV"), 0), hemo.get("irv_level", ""))
     with c3:
-        st.metric("EA/EES", fmt_num(vars.get("AC"), 2), classify_coupling(vars.get("AC")))
+        st.metric("CA / ICA", fmt_num(vars.get("CA"), 2), "Complacencia arterial")
 
     fig_ic_irv, fig_ic_irv_bytes = plot_ic_irv_vs_eg(vars, patient.get("edad_gestacional"))
     fig_quad, fig_quad_bytes = plot_quadrant_clinical(vars, patient.get("edad_gestacional"), hemo)
@@ -1669,7 +1640,6 @@ def build_markdown_report(results: Dict[str, Any]) -> str:
         f"- CA/ICA: {fmt_num(v.get('CA'),2)}",
         f"- IH: {fmt_num(v.get('IH'),2)}",
         f"- CTE: {fmt_num(v.get('CTE'),2)}",
-        f"- EA/EES: {fmt_num(v.get('AC'),2)} ({classify_coupling(v.get('AC'))})",
         "",
         "## Recomendaciones",
     ]
@@ -1827,9 +1797,6 @@ def complement_vars(primary: Dict[str, Any], secondary: Dict[str, Any]) -> Dict[
             cv = clean_num(v)
             if cv is not None and k not in out:
                 out[k] = float(cv)
-    if "AC" not in out and out.get("EA") and out.get("EES"):
-        if out["EES"] != 0:
-            out["AC"] = out["EA"] / out["EES"]
     if "PAM" not in out and out.get("PAS") and out.get("PAD"):
         out["PAM"] = (out["PAS"] + 2 * out["PAD"]) / 3
     if "IMC" not in out and out.get("PESO") and out.get("TALLA"):
@@ -1938,9 +1905,7 @@ def extract_ortho_from_text(text: str) -> Dict[str, Dict[str, float]]:
         ("PP", r"presi[oó]n\s+de\s+pulso"),
         ("CFT", r"contenido\s+de\s+fluidos\s+tor[aá]cicos"),
         ("CFTnr", r"cft\s*n\.?r\.?|cft\s+nr"),
-        ("EA", r"\bea\b"),
         ("EES", r"ees\s*\(capan\)|ees\s*\(weissler\)|\bees\b"),
-        ("AC", r"ac\s*\(capan\)|ac\s*\(weissler\)|\bac\b"),
         ("FE_CAPAN", r"fe\s*\(capan\)"),
     ]
     pending_var: Optional[str] = None
@@ -1951,11 +1916,11 @@ def extract_ortho_from_text(text: str) -> Dict[str, Dict[str, float]]:
             continue
         if pending_var is not None:
             nums_pending = extract_numbers(line)
-            if len(nums_pending) >= 3:
-                for pos, val in zip(["Acostado", "Sentado", "Parado"], nums_pending[:3]):
-                    if plausible(pending_var if pending_var in PLAUSIBLE_RANGES else "IC", val):
-                        if pending_var not in ortho[pos] or pending_var in {"EES", "AC", "FE_CAPAN"}:
-                            ortho[pos][pending_var] = float(val)
+            if len(nums_pending) >= 1:
+                # Solo se usa la primera columna (CINTA/Acostado). La situación "Parado" se ignora.
+                val = nums_pending[0]
+                if plausible(pending_var if pending_var in PLAUSIBLE_RANGES else "IC", val):
+                    ortho["Acostado"][pending_var] = float(val)
                 pending_var = None
                 continue
             pending_var = None
@@ -1981,96 +1946,13 @@ def extract_ortho_from_text(text: str) -> Dict[str, Dict[str, float]]:
                             # Evitar que las tablas internas del PDF sobrescriban el primer valor correcto
                             # extraído desde el texto visible. Para EES/AC se permite sobrescribir
                             # porque Capan aparece después de Weissler y es el valor usado clínicamente.
-                            if var not in ortho[pos] or var in {"EES", "AC", "FE_CAPAN"}:
+                            if var not in ortho[pos] or var in {"EES", "FE_CAPAN"}:
                                 ortho[pos][var] = float(val)
-                elif var in {"CFTnr", "EA", "EES", "AC", "FE_CAPAN"}:
+                elif var in {"CFTnr", "EES", "FE_CAPAN"}:
                     pending_var = var
                 break
-    # EES/AC: si se detectaron Weissler y Capan varias veces, se conserva el último de la página, usualmente Capan.
-    return ortho
-
-
-def ortho_delta_df(acostado: Dict[str, Any], parado: Dict[str, Any]) -> pd.DataFrame:
-    rows = []
-    for var in ["IC", "IRV", "CA", "FC", "DS", "IDS", "VM", "RVS", "CFT", "CFTnr", "EA", "EES", "AC"]:
-        a = clean_num(acostado.get(var))
-        p = clean_num(parado.get(var))
-        if a is None and p is None:
-            continue
-        delta = None if a is None or p is None else p - a
-        pct = None if a in [None, 0] or p is None else (p - a) / a * 100.0
-        rows.append({
-            "Variable": var,
-            "Acostado": a,
-            "Parado": p,
-            "Delta": delta,
-            "Delta %": pct,
-        })
-    return pd.DataFrame(rows)
-
-
-def plot_orthostatic_shift(acostado: Dict[str, Any], parado: Dict[str, Any], eg: Optional[float]) -> Tuple[plt.Figure, bytes]:
-    """Desplazamiento ortostático con ejes reales IC/IRV."""
-    ref = reference_at_week(clean_num(eg))
-    a_ic = clean_num(acostado.get("IC")); a_irv = clean_num(acostado.get("IRV"))
-    p_ic = clean_num(parado.get("IC")); p_irv = clean_num(parado.get("IRV"))
-    ic_low = ref["ic_media"] - ref["ic_sd"]
-    ic_high = ref["ic_media"] + ref["ic_sd"]
-    irv_low = ref["irv_media"] - ref["irv_sd"]
-    irv_high = ref["irv_media"] + ref["irv_sd"]
-
-    x_vals = [ic_low, ic_high] + [v for v in [a_ic, p_ic] if v is not None]
-    y_vals = [irv_low, irv_high] + [v for v in [a_irv, p_irv] if v is not None]
-    x_min = max(0.5, min(x_vals) - 0.8); x_max = max(x_vals) + 0.8
-    y_min = max(400, min(y_vals) - 450); y_max = max(y_vals) + 450
-
-    fig, ax = plt.subplots(figsize=(7.0, 5.7))
-    ax.axvspan(ic_low, ic_high, alpha=0.12, label="IC esperado EG")
-    ax.axhspan(irv_low, irv_high, alpha=0.12, label="IRV esperado EG")
-    ax.axvline(ic_low, linestyle="--", linewidth=1.0)
-    ax.axvline(ic_high, linestyle="--", linewidth=1.0)
-    ax.axhline(irv_low, linestyle="--", linewidth=1.0)
-    ax.axhline(irv_high, linestyle="--", linewidth=1.0)
-
-    if None not in [a_ic, a_irv]:
-        ax.scatter([a_ic], [a_irv], s=120, zorder=5, label="Acostado")
-        ax.annotate(f"Acostado\nIC {fmt_num(a_ic,2)} / IRV {fmt_num(a_irv,0)}", (a_ic, a_irv), xytext=(8,8), textcoords="offset points")
-    if None not in [p_ic, p_irv]:
-        ax.scatter([p_ic], [p_irv], s=120, zorder=5, label="Parado")
-        ax.annotate(f"Parado\nIC {fmt_num(p_ic,2)} / IRV {fmt_num(p_irv,0)}", (p_ic, p_irv), xytext=(8,8), textcoords="offset points")
-    if None not in [a_ic, a_irv, p_ic, p_irv]:
-        ax.annotate("", xy=(p_ic, p_irv), xytext=(a_ic, a_irv), arrowprops=dict(arrowstyle="->", lw=2.2))
-        ax.text((a_ic+p_ic)/2, (a_irv+p_irv)/2, "acostado → parado", fontsize=8, ha="center", va="bottom")
-    else:
-        ax.text(0.5, 0.5, "Faltan IC o IRV en acostado/parado", transform=ax.transAxes, ha="center", va="center")
-
-    ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)
-    ax.set_xlabel("Índice cardíaco medido, IC (L/min/m²)")
-    ax.set_ylabel("Índice de resistencia vascular medido, IRV (dyn·s·cm⁻5·m²)")
-    ax.set_title("Desplazamiento ortostático IC/IRV: acostado → parado")
-    ax.grid(True, alpha=0.22)
-    ax.legend(fontsize=8)
-    ax.text(
-        0.5, -0.20,
-        f"Ejes en unidades reales. Referencia EG {fmt_num(ref['semana'],1)} sem: IC {fmt_num(ic_low,2)}-{fmt_num(ic_high,2)}; IRV {fmt_num(irv_low,0)}-{fmt_num(irv_high,0)}.",
-        transform=ax.transAxes, ha="center", va="top", fontsize=7.5, wrap=True
-    )
-    fig.tight_layout()
-    return fig, fig_to_png_bytes(fig)
-
-
-def interpret_orthostatism(acostado: Dict[str, Any], parado: Dict[str, Any]) -> str:
-    a_ic = clean_num(acostado.get("IC")); p_ic = clean_num(parado.get("IC"))
-    a_irv = clean_num(acostado.get("IRV")); p_irv = clean_num(parado.get("IRV"))
-    if None in [a_ic, p_ic, a_irv, p_irv]:
-        return "No clasificable: faltan IC o IRV en acostado/parado."
-    if p_ic < a_ic and p_irv > a_irv:
-        return "Patrón ortostático esperado/conservado: desciende IC y aumenta IRV al ponerse de pie."
-    if p_ic >= a_ic and p_irv <= a_irv:
-        return "Respuesta ortostática inadecuada: no se observa caída de IC ni aumento compensatorio de IRV."
-    if p_ic < a_ic and p_irv <= a_irv:
-        return "Caída de IC sin aumento compensatorio de IRV: posible respuesta vasoconstrictora insuficiente."
-    return "Aumento de IRV sin caída de IC: respuesta vasoconstrictora predominante; interpretar con PA, FC y volemia."
+    # Solo se conserva la columna basal (Acostado/CINTA). La situación "Parado" no se utiliza.
+    return {"Acostado": ortho.get("Acostado", {})}
 
 
 def reset_integrated_dual_state() -> None:
@@ -2174,8 +2056,7 @@ def dual_pdf_flow(cfg: Dict[str, Any], logo_bytes: Optional[bytes], firma_bytes:
         complete_base = complement_vars(complete_direct, pick_acostado_group(grouped_c))
         four_base = complement_vars(four_direct, complement_vars(ortho_4.get("Acostado", {}), pick_acostado_group(grouped_4)))
         base_vars = complement_vars(complete_base, four_base)
-        standing_vars = complement_vars(ortho_4.get("Parado", {}), {})
-        # Si parado no trae alguna variable, no se completa con acostado para no falsear delta.
+        standing_vars = {}
         demo = merge_demo(st.session_state.get("demo_pdf_completo", {}), st.session_state.get("demo_pdf_4hojas", {}))
         if "PAS" in base_vars:
             demo.setdefault("PAS", base_vars.get("PAS"))
@@ -2189,7 +2070,6 @@ def dual_pdf_flow(cfg: Dict[str, Any], logo_bytes: Optional[bytes], firma_bytes:
         st.session_state["dual_integrated_demo"] = demo
         st.session_state["dual_base_vars"] = base_vars
         st.session_state["dual_standing_vars"] = standing_vars
-        st.session_state["dual_ortho_table"] = ortho_delta_df(base_vars, standing_vars)
         st.session_state["dual_conflicts"] = conflicts
         st.session_state["dual_integrated_ready"] = True
         st.success("Integración realizada: informe COMPLETO + informe DE 4 HOJAS complementados.")
@@ -2225,39 +2105,16 @@ def dual_pdf_flow(cfg: Dict[str, Any], logo_bytes: Optional[bytes], firma_bytes:
     patient = demographic_form(demo, key_prefix="dual_demo_final")
     flags = clinical_flags_form(key_prefix="dual_flags_final")
 
-    ec1, ec2 = st.columns(2)
-    with ec1:
-        st.markdown("#### Acostado / decúbito supino integrado")
-        edited_base = st.data_editor(
-            variables_to_editor_df(base_vars),
-            use_container_width=True,
-            hide_index=True,
-            disabled=["Variable", "Nombre", "Grupo", "Unidad"],
-            column_config={"Valor": st.column_config.NumberColumn("Valor", format="%.3f")},
-            key="editor_base_integrado_dos_pdf_v15",
-        )
-    with ec2:
-        st.markdown("#### Parado / bipedestación desde informe de 4 hojas")
-        edited_stand = st.data_editor(
-            variables_to_editor_df(standing_vars),
-            use_container_width=True,
-            hide_index=True,
-            disabled=["Variable", "Nombre", "Grupo", "Unidad"],
-            column_config={"Valor": st.column_config.NumberColumn("Valor", format="%.3f")},
-            key="editor_parado_integrado_dos_pdf_v15",
-        )
+    st.markdown("#### Acostado / decúbito supino integrado")
+    edited_base = st.data_editor(
+        variables_to_editor_df(base_vars),
+        use_container_width=True,
+        hide_index=True,
+        disabled=["Variable", "Nombre", "Grupo", "Unidad"],
+        column_config={"Valor": st.column_config.NumberColumn("Valor", format="%.3f")},
+        key="editor_base_integrado_dos_pdf_v15",
+    )
     base_vars = editor_df_to_variables(edited_base)
-    standing_vars = editor_df_to_variables(edited_stand)
-
-    st.markdown("### Ortostatismo ICG: desplazamiento acostado → parado")
-    delta_df = ortho_delta_df(base_vars, standing_vars)
-    if delta_df.empty:
-        st.warning("No se pudieron calcular deltas ortostáticos. Revisar que el informe de 4 hojas tenga Acostado y Parado.")
-    else:
-        st.dataframe(delta_df, use_container_width=True, hide_index=True)
-        st.info(interpret_orthostatism(base_vars, standing_vars))
-        fig_ortho, _ = plot_orthostatic_shift(base_vars, standing_vars, patient.get("edad_gestacional"))
-        st.pyplot(fig_ortho, clear_figure=False)
 
     if st.button("ANALIZAR Y GENERAR INFORME MÉDICO INTEGRADO DE LOS DOS PDF", type="primary", key="btn_analizar_dos_pdf_integrado_v15"):
         results = analyze_patient(patient, base_vars, flags, cfg)
@@ -2284,9 +2141,7 @@ def manual_flow(cfg: Dict[str, Any], logo_bytes: Optional[bytes], firma_bytes: O
         vars["CTS"] = st.number_input("CTS/STR (relación o %)", min_value=0.0, max_value=100.0, value=0.34, step=0.01, key="manual_var_cts")
         vars["CFT"] = st.number_input("CFT", min_value=0.0, max_value=120.0, value=24.0, step=1.0, key="manual_var_cft")
     with c4:
-        vars["EA"] = st.number_input("EA", min_value=0.0, max_value=10.0, value=1.2, step=0.1, key="manual_var_ea")
         vars["EES"] = st.number_input("EES", min_value=0.0, max_value=20.0, value=1.4, step=0.1, key="manual_var_ees")
-        vars["AC"] = st.number_input("EA/EES", min_value=0.0, max_value=6.0, value=0.86, step=0.05, key="manual_var_ac")
         vars["FC"] = st.number_input("FC", min_value=35.0, max_value=190.0, value=80.0, step=1.0, key="manual_var_fc")
 
     # Quitar ceros vacíos opcionales.
